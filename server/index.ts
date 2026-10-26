@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { initDatabaseConnection, getDbPool, isDbConnected } from './db';
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
