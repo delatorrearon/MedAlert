@@ -1,0 +1,47 @@
+================================================================================
+MedAlert - Required Dependencies Installation Guide
+================================================================================
+
+1. STANDARD INSTALLATION (RECOMMENDED)
+--------------------------------------------------------------------------------
+After cloning the repository, simply run this command in the project root:
+
+    npm install
+
+This automatically reads package.json and installs all frontend, backend,
+and development packages with the exact tested versions.
+
+
+================================================================================
+2. MANUAL INSTALLATION BY CATEGORY
+================================================================================
+
+A. Frontend & App Dependencies:
+--------------------------------------------------------------------------------
+    npm install react react-dom lucide-react recharts date-fns clsx tailwind-merge uuid @types/uuid
+
+B. Cloud Database (Supabase SDK):
+--------------------------------------------------------------------------------
+    npm install @supabase/supabase-js
+
+C. Backend & MySQL Dependencies (Express + XAMPP):
+--------------------------------------------------------------------------------
+    npm install express cors mysql2 dotenv
+
+D. Dev Tools & TypeScript / Vite Compilers:
+--------------------------------------------------------------------------------
+    npm install -D vite @vitejs/plugin-react typescript tailwindcss @tailwindcss/vite vite-plugin-singlefile tsx concurrently @types/node @types/react @types/react-dom @types/express @types/cors
+
+
+================================================================================
+3. RUNNING THE APPLICATION
+================================================================================
+
+- Run both Frontend and Backend concurrently:
+    npm run dev:all
+
+- Run Frontend only (Vite at http://localhost:5173):
+    npm run dev
+
+- Run Backend only (Express at http://localhost:5001):
+    npm run server

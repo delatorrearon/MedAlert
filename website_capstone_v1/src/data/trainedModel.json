@@ -1,0 +1,93 @@
+{
+  "feature_columns": [
+    "sleep",
+    "exercise",
+    "water",
+    "caffeine",
+    "bmi",
+    "age",
+    "calories_deviation",
+    "protein",
+    "carbs",
+    "fats",
+    "smoking",
+    "alcohol",
+    "processed_food"
+  ],
+  "logistic_regression": {
+    "intercept": -0.6304649362639461,
+    "coefficients": {
+      "sleep": -0.08447800107161987,
+      "exercise": -0.3627987484677715,
+      "water": 0.0,
+      "caffeine": 0.05165766415698927,
+      "bmi": 0.23400128643980214,
+      "age": 1.173036681538517,
+      "calories_deviation": -0.03885968467228707,
+      "protein": 0.0,
+      "carbs": -0.038859684672233386,
+      "fats": -0.038859684672233386,
+      "smoking": 0.2956738757541423,
+      "alcohol": -0.07895113110860384,
+      "processed_food": 0.0
+    },
+    "scaler_mean": {
+      "sleep": 7.102945000000001,
+      "exercise": 25.42155,
+      "water": 8.0,
+      "caffeine": 2.0011499999999995,
+      "bmi": 28.338310553633224,
+      "age": 54.66135,
+      "calories_deviation": 0.04994999999999999,
+      "protein": 65.0,
+      "carbs": 259.99,
+      "fats": 69.995,
+      "smoking": 0.40925,
+      "alcohol": 0.25454,
+      "processed_food": 0.5
+    },
+    "scaler_scale": {
+      "sleep": 1.444069190508197,
+      "exercise": 9.596697119191582,
+      "water": 1.0,
+      "caffeine": 0.05004675314143766,
+      "bmi": 6.340663508333533,
+      "age": 17.94869538928944,
+      "calories_deviation": 0.0015803480629279108,
+      "protein": 1.0,
+      "carbs": 0.3160696125855822,
+      "fats": 0.1580348062927911,
+      "smoking": 0.4916954723200123,
+      "alcohol": 0.20163677343183212,
+      "processed_food": 1.0
+    }
+  },
+  "metrics": {
+    "logistic_regression": {
+      "accuracy": 69.0,
+      "precision": 18.5,
+      "recall": 76.4,
+      "f1Score": 29.7
+    },
+    "decision_tree": {
+      "accuracy": 91.4,
+      "precision": 63.6,
+      "recall": 0.8,
+      "f1Score": 1.6
+    },
+    "random_forest": {
+      "accuracy": 67.4,
+      "precision": 17.9,
+      "recall": 78.1,
+      "f1Score": 29.2
+    },
+    "ensemble": {
+      "accuracy": 88.5,
+      "precision": 29.7,
+      "recall": 24.8,
+      "f1Score": 27.0
+    }
+  },
+  "version": "1.0",
+  "trained_on": "heart_2020_cleaned + sleep_health"
+}

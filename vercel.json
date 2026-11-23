@@ -1,0 +1,11 @@
+{
+  "buildCommand": "cd website_capstone_v1 && npm install && npm run build",
+  "outputDirectory": "website_capstone_v1/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+

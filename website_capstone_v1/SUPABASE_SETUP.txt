@@ -1,0 +1,137 @@
+================================================================================
+MedAlert - Supabase Setup & Implementation Guide for New Users
+================================================================================
+
+This guide walks another user or developer through setting up their own free
+Supabase PostgreSQL database and connecting it to MedAlert (locally and on Vercel).
+
+================================================================================
+PREREQUISITES
+================================================================================
+- A free account on Supabase: https://supabase.com
+- Node.js (v18 or higher) installed on your machine
+- Git installed
+
+
+================================================================================
+STEP-BY-STEP IMPLEMENTATION PLAN
+================================================================================
+
+--------------------------------------------------------------------------------
+STEP 1: CREATE A NEW SUPABASE PROJECT
+--------------------------------------------------------------------------------
+1. Log in to your Supabase account: https://supabase.com/dashboard
+2. Click "New Project" and choose your organization.
+3. Fill in the project details:
+   - Name: MedAlert (or any name you prefer)
+   - Database Password: Create a strong password (save this safely)
+   - Region: Select the region closest to your users
+4. Click "Create new project" and wait 1-2 minutes for provisioning.
+
+
+--------------------------------------------------------------------------------
+STEP 2: EXECUTE THE DATABASE SCHEMA
+--------------------------------------------------------------------------------
+1. In your Supabase project dashboard, click "SQL Editor" in the left sidebar.
+2. Click "New query" (or the "+" button).
+3. Open the file in this repository:
+   --> supabase/schema.sql
+4. Copy the ENTIRE content of "supabase/schema.sql" and paste it into the editor.
+5. Click "Run" (green button) in the bottom right.
+6. Verify in the left sidebar under "Table Editor" that 5 tables are created:
+   - users
+   - user_profiles
+   - daily_logs
+   - ml_snapshots
+   - tip_reviews
+
+
+--------------------------------------------------------------------------------
+STEP 3: RETRIEVE YOUR API KEYS
+--------------------------------------------------------------------------------
+1. In your Supabase dashboard, click "Project Settings" (gear icon at the bottom).
+2. Click "API" under Configuration.
+3. Find and copy these two values:
+   - Project URL (e.g., https://your-project-id.supabase.co)
+     * IMPORTANT: Do NOT include /rest/v1/ at the end. Use the clean base URL.
+   - anon (public) key (a long JWT string starting with eyJhbGciOi...)
+
+
+--------------------------------------------------------------------------------
+STEP 4: CONFIGURE YOUR LOCAL ENVIRONMENT (.env)
+--------------------------------------------------------------------------------
+1. In your project root, make a copy of ".env.example" and name it ".env":
+   Windows (PowerShell):
+       Copy-Item .env.example .env
+   Linux / Mac:
+       cp .env.example .env
+
+2. Open ".env" in your editor and replace the Supabase placeholders:
+
+   VITE_SUPABASE_URL=https://your-project-id.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-actual-anon-key-here
+
+
+--------------------------------------------------------------------------------
+STEP 5: RUN AND TEST LOCALLY
+--------------------------------------------------------------------------------
+1. Install project dependencies:
+       npm install
+
+2. Start the Vite development server:
+       npm run dev
+
+3. Open http://localhost:5173 in your browser.
+4. Press F12 to open Developer Tools and select the "Console" tab.
+   You should see:
+       [MedAlert] Supabase initialized successfully: https://your-project-id.supabase.co
+5. Sign up for a new account in the app.
+6. Go back to your Supabase Dashboard -> "Table Editor" -> "users".
+   Click "Refresh" and you will see your new account listed!
+
+
+--------------------------------------------------------------------------------
+STEP 6: DEPLOY TO VERCEL (PRODUCTION)
+--------------------------------------------------------------------------------
+1. Push your code to your GitHub repository.
+2. Go to https://vercel.com and click "Add New Project".
+3. Select your MedAlert repository and choose your production branch.
+4. Expand "Environment Variables" and add these two:
+
+   VARIABLE 1:
+   - Key:   VITE_SUPABASE_URL
+   - Value: https://your-project-id.supabase.co
+   * If Vercel prompts about public framework prefixes, change the dropdown
+     from "Secret" to "Config" (Plaintext).
+
+   VARIABLE 2:
+   - Key:   VITE_SUPABASE_ANON_KEY
+   - Value: (Your full anon key string)
+   * Change the dropdown from "Secret" to "Config" (Plaintext).
+
+5. Click "Deploy".
+6. Once deployed, open your live Vercel URL. Your app is now running in
+   production with cloud PostgreSQL persistence via Supabase!
+
+
+================================================================================
+COMMON TROUBLESHOOTING & GOTCHAS
+================================================================================
+
+1. Problem: Supabase table remains empty after signing up on Vercel.
+   - Solution: In Vite, environment variables are baked in at build time.
+     If you added environment variables AFTER your deployment, you MUST go to
+     the Vercel Deployments tab, click "..." on the latest build, and click
+     "Redeploy". A simple browser refresh (F5) will NOT apply new variables.
+
+2. Problem: 404 error on Supabase requests.
+   - Solution: Ensure VITE_SUPABASE_URL does NOT have "/rest/v1/" or a trailing
+     slash. It must look like: https://xxxx.supabase.co
+
+3. Problem: Vercel shows "Remove the public framework prefix to keep this private".
+   - Solution: Change the dropdown next to the variable from "Secret" to
+     "Config". Variables starting with "VITE_" are meant for the browser.
+
+4. Problem: Permission denied when inserting rows.
+   - Solution: Re-run the bottom section of "supabase/schema.sql" to ensure
+     Row Level Security (RLS) policies are active for the "anon" role.
