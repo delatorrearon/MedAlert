@@ -1,0 +1,74 @@
+{
+  "$schema": "MedAlert ML dataset schema — aligned with website_capstone_v0.8/src/db/database.ts and mlEngine.ts",
+  "version": "1.0",
+  "files": {
+    "profiles": {
+      "path": "processed/profiles.csv",
+      "description": "One row per user. Static demographic and lifestyle fields collected during onboarding.",
+      "columns": {
+        "user_id": { "type": "string", "required": true },
+        "age": { "type": "integer", "required": true, "min": 1, "max": 120 },
+        "gender": { "type": "string", "required": false, "values": ["male", "female", "other", "prefer_not_to_say"] },
+        "weight_kg": { "type": "float", "required": true, "min": 20, "max": 300 },
+        "height_cm": { "type": "float", "required": true, "min": 100, "max": 250 },
+        "smoking": { "type": "string", "required": true, "values": ["never", "former", "current"] },
+        "alcohol": { "type": "string", "required": true, "values": ["never", "rarely", "moderately", "frequently"] },
+        "processed_food": { "type": "string", "required": true, "values": ["rarely", "sometimes", "frequently"] },
+        "activity_level": { "type": "string", "required": false, "values": ["sedentary", "light", "moderate", "active", "very_active"] },
+        "diet_type": { "type": "string", "required": false, "values": ["balanced", "vegetarian", "vegan", "keto", "paleo", "mediterranean", "other"] },
+        "vegetable_intake": { "type": "string", "required": false, "values": ["daily", "often", "sometimes", "rarely"] },
+        "fruit_intake": { "type": "string", "required": false, "values": ["daily", "often", "sometimes", "rarely"] },
+        "medical_conditions": { "type": "string", "required": false, "description": "Pipe-separated list, e.g. diabetes|hypertension" }
+      }
+    },
+    "daily_logs": {
+      "path": "processed/daily_logs.csv",
+      "description": "One row per user per day. Daily health and nutrition entries.",
+      "columns": {
+        "user_id": { "type": "string", "required": true },
+        "date": { "type": "date", "required": true, "format": "YYYY-MM-DD" },
+        "sleep_hours": { "type": "float", "required": true, "min": 0, "max": 24 },
+        "exercise_minutes": { "type": "float", "required": true, "min": 0 },
+        "water_glasses": { "type": "float", "required": true, "min": 0 },
+        "caffeine_drinks": { "type": "float", "required": true, "min": 0 },
+        "calories": { "type": "float", "required": true, "min": 0 },
+        "protein_g": { "type": "float", "required": true, "min": 0 },
+        "carbs_g": { "type": "float", "required": true, "min": 0 },
+        "fats_g": { "type": "float", "required": true, "min": 0 },
+        "weight_kg": { "type": "float", "required": false, "description": "Optional daily weight; falls back to profile weight_kg" }
+      }
+    },
+    "labels": {
+      "path": "processed/labels.csv",
+      "description": "Ground-truth risk labels for supervised training. Add when your dataset includes outcomes or clinical thresholds.",
+      "columns": {
+        "user_id": { "type": "string", "required": true },
+        "date": { "type": "date", "required": true, "format": "YYYY-MM-DD" },
+        "cardiovascular_risk": { "type": "float", "required": true, "min": 0, "max": 100, "description": "Risk score 0-100" },
+        "metabolic_risk": { "type": "float", "required": true, "min": 0, "max": 100 },
+        "nutritional_risk": { "type": "float", "required": true, "min": 0, "max": 100 },
+        "sleep_risk": { "type": "float", "required": true, "min": 0, "max": 100 },
+        "overall_risk": { "type": "float", "required": false, "min": 0, "max": 100 },
+        "high_risk_binary": { "type": "integer", "required": false, "values": [0, 1], "description": "Optional binary target for classification (1 = high/critical risk)" }
+      }
+    }
+  },
+  "feature_vector": {
+    "description": "13 features derived in feature_engineering.py — mirrors mlEngine.ts toFeatureVector()",
+    "columns": [
+      "sleep", "exercise", "water", "caffeine", "bmi", "age",
+      "calories_deviation", "protein", "carbs", "fats",
+      "smoking", "alcohol", "processed_food"
+    ]
+  },
+  "targets": {
+    "regression": ["cardiovascular_risk", "metabolic_risk", "nutritional_risk", "sleep_risk", "overall_risk"],
+    "classification": ["high_risk_binary"]
+  },
+  "suggested_datasets": [
+    "NHANES (CDC) — demographics, diet, sleep, BMI, lab values",
+    "Kaggle: Personal Key Indicators of Heart Disease",
+    "Kaggle: Sleep Health and Lifestyle Dataset",
+    "UCI: Cardiovascular Disease dataset"
+  ]
+}

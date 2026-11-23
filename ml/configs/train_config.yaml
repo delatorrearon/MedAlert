@@ -1,0 +1,62 @@
+# MedAlert ML training configuration
+# Update paths after you drop your dataset into data/raw/
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  profiles_file: profiles.csv
+  daily_logs_file: daily_logs.csv
+  labels_file: labels.csv
+  schema_file: data/schema.json
+
+features:
+  target_calories: 2000
+  # Columns used by feature_engineering.py (matches mlEngine.ts)
+  feature_columns:
+    - sleep
+    - exercise
+    - water
+    - caffeine
+    - bmi
+    - age
+    - calories_deviation
+    - protein
+    - carbs
+    - fats
+    - smoking
+    - alcohol
+    - processed_food
+
+training:
+  test_size: 0.2
+  random_state: 42
+  # Cap rows for faster training on large imports (heart dataset ~320k rows)
+  max_samples: 50000
+  # Primary target for classification training
+  classification_target: high_risk_binary
+  # Regression targets (multi-output)
+  regression_targets:
+    - cardiovascular_risk
+    - metabolic_risk
+    - nutritional_risk
+    - sleep_risk
+  # Risk threshold for deriving binary labels when labels.csv has scores but no binary column
+  high_risk_threshold: 50
+
+models:
+  logistic_regression:
+    max_iter: 1000
+    class_weight: balanced
+  decision_tree:
+    max_depth: 6
+    min_samples_leaf: 10
+    random_state: 42
+  random_forest:
+    n_estimators: 100
+    max_depth: 8
+    random_state: 42
+    n_jobs: -1
+
+output:
+  models_dir: models
+  export_file: models/exported_coefficients.json
