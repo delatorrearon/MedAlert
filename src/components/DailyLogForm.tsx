@@ -7,6 +7,7 @@ import { format, parseISO, subDays } from 'date-fns';
 import { DailyLog, FoodQuality, MealEntry, UserProfile } from '../db/database';
 import { estimateMacrosFromCalories } from '../utils/mlEngine';
 import { FoodItem, macroTargetsForProfile, mealTotals, searchFoods } from '../utils/foodEngine';
+import { useConfirm } from '../context/ConfirmContext';
 import MacroCompare from './MacroCompare';
 
 export interface DailyLogFormProps {
@@ -227,7 +228,24 @@ export default function DailyLogForm({
     setFoodResults([]);
   };
 
+  const { confirm } = useConfirm();
+
   const removeMeal = (i: number) => applyMealTotals(meals.filter((_, idx) => idx !== i));
+
+  const handleRemoveMeal = async (i: number) => {
+    const meal = meals[i];
+    const ok = await confirm({
+      title: 'Remove Food Item',
+      message: `Are you sure you want to remove "${meal?.name || 'this food item'}" from today's log?`,
+      confirmText: 'Remove',
+      cancelText: 'Keep',
+      variant: 'danger',
+      iconType: 'trash',
+    });
+    if (ok) {
+      removeMeal(i);
+    }
+  };
 
   const changeQty = (i: number, qty: number) =>
     applyMealTotals(meals.map((m, idx) => (idx === i ? { ...m, qty: Math.max(0.5, qty) } : m)));
@@ -528,7 +546,7 @@ export default function DailyLogForm({
                           aria-label="Increase servings">
                           <Plus className="w-3.5 h-3.5" />
                         </button>
-                        <button type="button" onClick={() => removeMeal(i)}
+                        <button type="button" onClick={() => handleRemoveMeal(i)}
                           className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
                           aria-label="Remove food">
                           <Trash2 className="w-3.5 h-3.5" />

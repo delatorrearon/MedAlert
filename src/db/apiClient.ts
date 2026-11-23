@@ -2,22 +2,49 @@ import { clientEnv } from '../config/env';
 import { User, UserProfile, DailyLog, MLSnapshot, TipReview, TipRecInput, UserRole } from './database';
 
 const BASE_URL = clientEnv.apiBaseUrl;
+const TOKEN_KEY = 'med_auth_token';
+
+export function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string | null): void {
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    // Ignore storage issues in restricted environments
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...((options?.headers as Record<string, string>) || {}),
+    };
+
     const res = await fetch(`${BASE_URL}${path}`, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options?.headers || {}),
-      },
+      credentials: 'include',
+      headers,
     });
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `HTTP error ${res.status}`);
     }
     return await res.json();
-  } catch (err) {
+  } catch (_err) {
     // Return null or rethrow based on context; allows callers to fall back to local storage
     return null;
   }
@@ -34,17 +61,29 @@ export const api = {
 
   // Auth
   async register(name: string, email: string, password: string, role: UserRole = 'patient') {
-    return request<{ success: boolean; error?: string; user?: User }>('/auth/register', {
+    const res = await request<{ success: boolean; error?: string; user?: User; token?: string }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ name, email, password, role }),
     });
+    if (res?.success && res.token) {
+      setAuthToken(res.token);
+    }
+    return res;
   },
 
   async login(email: string, password: string) {
-    return request<{ success: boolean; error?: string; user?: User }>('/auth/login', {
+    const res = await request<{ success: boolean; error?: string; user?: User; token?: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    if (res?.success && res.token) {
+      setAuthToken(res.token);
+    }
+    return res;
+  },
+
+  logout(): void {
+    setAuthToken(null);
   },
 
   async getAllUsers(): Promise<User[] | null> {

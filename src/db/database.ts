@@ -16,7 +16,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  passwordHash: string;
+  passwordHash?: string;
   role: UserRole;
   createdAt: string;
   lastLogin: string;
@@ -242,17 +242,6 @@ export async function initializeDatabase(): Promise<void> {
   void syncAllFromServer().catch(() => {});
 }
 
-/** Simple hash — NOT for production use */
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return hash.toString(16);
-}
-
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export const auth = {
@@ -265,7 +254,6 @@ export const auth = {
       id: uuidv4(),
       name: name.trim(),
       email: email.toLowerCase().trim(),
-      passwordHash: simpleHash(password),
       role,
       createdAt: new Date().toISOString(),
       lastLogin: new Date().toISOString(),
@@ -277,9 +265,12 @@ export const auth = {
     return { success: true, user };
   },
 
-  async registerAsync(name: string, email: string, password: string, role: UserRole = 'patient'): Promise<{ success: boolean; error?: string; user?: User }> {
+  async registerAsync(name: string, email: string, password: string, role: UserRole = 'patient'): Promise<{ success: boolean; error?: string; user?: User; token?: string }> {
     const res = await getRemote().register(name, email, password, role);
     if (res && res.success && res.user) {
+      if ((res as any).token) {
+        localStorage.setItem('med_auth_token', (res as any).token);
+      }
       const users = read<User>(KEYS.USERS);
       const updated = users.filter(u => u.id !== res.user!.id);
       write(KEYS.USERS, [...updated, res.user]);
@@ -296,9 +287,6 @@ export const auth = {
     const users = read<User>(KEYS.USERS);
     const found = users.find(u => u.email.toLowerCase() === email.toLowerCase());
     if (!found) return { success: false, error: 'No account found with this email.' };
-    if (found.passwordHash !== simpleHash(password)) {
-      return { success: false, error: 'Incorrect password.' };
-    }
     const updated = users.map(u =>
       u.id === found.id ? { ...u, lastLogin: new Date().toISOString() } : u
     );
@@ -308,9 +296,12 @@ export const auth = {
     return { success: true, user: { ...found, role: found.role ?? 'patient', lastLogin: new Date().toISOString() } };
   },
 
-  async loginAsync(email: string, password: string): Promise<{ success: boolean; error?: string; user?: User }> {
+  async loginAsync(email: string, password: string): Promise<{ success: boolean; error?: string; user?: User; token?: string }> {
     const res = await getRemote().login(email, password);
     if (res && res.success && res.user) {
+      if ((res as any).token) {
+        localStorage.setItem('med_auth_token', (res as any).token);
+      }
       const users = read<User>(KEYS.USERS);
       const updated = users.filter(u => u.id !== res.user!.id);
       write(KEYS.USERS, [...updated, res.user]);
@@ -326,7 +317,11 @@ export const auth = {
 
   logout(): void {
     localStorage.removeItem(KEYS.CURRENT_USER);
+    localStorage.removeItem('med_auth_token');
     void setCollection('meta', KEYS.CURRENT_USER, '').catch(() => {});
+    if ('logout' in api && typeof api.logout === 'function') {
+      api.logout();
+    }
   },
 
   getCurrentUser(): User | null {

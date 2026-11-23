@@ -1,17 +1,77 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { initDatabaseConnection, getDbPool, isDbConnected } from './db';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const JWT_SECRET = process.env.JWT_SECRET || 'medalert-clinical-super-secret-jwt-key-2026-prod-grade';
+const JWT_EXPIRES_IN = '7d';
 
+// ─── Security Headers & Middleware ──────────────────────────────────────────
+
+app.use(helmet());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(express.json());
 
-// Simple hash matching the frontend algorithm
-function simpleHash(str: string): string {
+// ─── Rate Limiting ──────────────────────────────────────────────────────────
+
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // maximum 10 attempts per 15 minutes per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many authentication attempts. Please try again after 15 minutes.',
+  },
+});
+
+// ─── Authentication & Authorization Helpers ─────────────────────────────────
+
+export interface AuthenticatedUser {
+  userId: string;
+  role: 'patient' | 'doctor';
+  email: string;
+}
+
+export interface AuthRequest extends Request {
+  user?: AuthenticatedUser;
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const list: Record<string, string> = {};
+  const rc = req.headers.cookie;
+  if (!rc) return list;
+  rc.split(';').forEach((cookie) => {
+    const parts = cookie.split('=');
+    if (parts.length >= 2) {
+      list[parts[0].trim()] = decodeURIComponent(parts.slice(1).join('=').trim());
+    }
+  });
+  return list;
+}
+
+function generateToken(payload: AuthenticatedUser): string {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+}
+
+function setTokenCookie(res: Response, token: string) {
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+}
+
+// Legacy hash fallback for automated migration of legacy test records
+function legacySimpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
@@ -19,6 +79,46 @@ function simpleHash(str: string): string {
     hash |= 0;
   }
   return hash.toString(16);
+}
+
+// Middleware: Verify JWT Authentication
+export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+  let token: string | undefined;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  } else {
+    const cookies = parseCookies(req);
+    if (cookies.token) {
+      token = cookies.token;
+    }
+  }
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Authentication token is required.' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as AuthenticatedUser;
+    req.user = decoded;
+    return next();
+  } catch (_err) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired token.' });
+  }
+}
+
+// Middleware: Role-Based Authorization
+export function requireRole(allowedRole: 'doctor' | 'patient') {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Authentication required.' });
+    }
+    if (req.user.role !== allowedRole) {
+      return res.status(403).json({ success: false, error: `Forbidden: Requires ${allowedRole} role.` });
+    }
+    return next();
+  };
 }
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
@@ -33,11 +133,15 @@ app.get('/api/health', async (_req: Request, res: Response) => {
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/auth/register', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { name, email, password, role = 'patient' } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, error: 'Name, email, and password are required.' });
+    }
+
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
     }
 
     const pool = getDbPool();
@@ -50,7 +154,8 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     const id = uuidv4();
     const now = new Date();
-    const passwordHash = simpleHash(password);
+    // Strong salted bcrypt hash (cost factor 10)
+    const passwordHash = await bcrypt.hash(password, 10);
 
     await pool.query(
       `INSERT INTO users (id, name, email, password_hash, role, created_at, last_login, profile_complete)
@@ -58,6 +163,10 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       [id, name.trim(), cleanEmail, passwordHash, role, now, now, 0]
     );
 
+    const token = generateToken({ userId: id, role, email: cleanEmail });
+    setTokenCookie(res, token);
+
+    // Explicitly omit password_hash from JSON response
     const user = {
       id,
       name: name.trim(),
@@ -68,14 +177,14 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       profileComplete: false,
     };
 
-    return res.json({ success: true, user });
+    return res.json({ success: true, user, token });
   } catch (err: any) {
     console.error('Registration error:', err);
     return res.status(500).json({ success: false, error: err.message || 'Database error during registration.' });
   }
 });
 
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -91,13 +200,31 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     }
 
     const userRow = rows[0];
-    if (userRow.password_hash !== simpleHash(password)) {
+    let passwordMatches = false;
+
+    // Check if the stored hash is a bcrypt hash
+    if (userRow.password_hash.startsWith('$2a$') || userRow.password_hash.startsWith('$2b$')) {
+      passwordMatches = await bcrypt.compare(password, userRow.password_hash);
+    } else {
+      // Gracefully handle and upgrade legacy simpleHash accounts
+      if (userRow.password_hash === legacySimpleHash(password)) {
+        passwordMatches = true;
+        const upgradedHash = await bcrypt.hash(password, 10);
+        await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [upgradedHash, userRow.id]);
+      }
+    }
+
+    if (!passwordMatches) {
       return res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
 
     const now = new Date();
     await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [now, userRow.id]);
 
+    const token = generateToken({ userId: userRow.id, role: userRow.role, email: userRow.email });
+    setTokenCookie(res, token);
+
+    // Explicitly omit password_hash from JSON response
     const user = {
       id: userRow.id,
       name: userRow.name,
@@ -108,17 +235,21 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       profileComplete: Boolean(userRow.profile_complete),
     };
 
-    return res.json({ success: true, user });
+    return res.json({ success: true, user, token });
   } catch (err: any) {
     console.error('Login error:', err);
     return res.status(500).json({ success: false, error: err.message || 'Database error during login.' });
   }
 });
 
-app.get('/api/auth/users', async (_req: Request, res: Response) => {
+// User Roster: Protected, only doctors are authorized to fetch patient roster
+app.get('/api/auth/users', requireAuth, requireRole('doctor'), async (_req: AuthRequest, res: Response) => {
   try {
     const pool = getDbPool();
-    const [rows]: any = await pool.query('SELECT id, name, email, role, created_at, last_login, profile_complete FROM users');
+    // Explicitly omit password_hash from SQL select
+    const [rows]: any = await pool.query(
+      'SELECT id, name, email, role, created_at, last_login, profile_complete FROM users'
+    );
     const users = rows.map((u: any) => ({
       id: u.id,
       name: u.name,
@@ -134,9 +265,13 @@ app.get('/api/auth/users', async (_req: Request, res: Response) => {
   }
 });
 
-app.put('/api/auth/profile-complete', async (req: Request, res: Response) => {
+app.put('/api/auth/profile-complete', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { userId } = req.body;
+    if (req.user!.role === 'patient' && req.user!.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Cannot update another user's profile status." });
+    }
+
     const pool = getDbPool();
     await pool.query('UPDATE users SET profile_complete = 1 WHERE id = ?', [userId]);
     return res.json({ success: true });
@@ -145,10 +280,15 @@ app.put('/api/auth/profile-complete', async (req: Request, res: Response) => {
   }
 });
 
-app.put('/api/auth/user/:id', async (req: Request, res: Response) => {
+app.put('/api/auth/user/:id', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== id) {
+      return res.status(403).json({ success: false, error: "Forbidden: Cannot modify another user's account." });
+    }
+
     const pool = getDbPool();
     await pool.query('UPDATE users SET name = ? WHERE id = ?', [name, id]);
     return res.json({ success: true });
@@ -159,9 +299,14 @@ app.put('/api/auth/user/:id', async (req: Request, res: Response) => {
 
 // ─── Profile Routes ───────────────────────────────────────────────────────────
 
-app.get('/api/profiles/:userId', async (req: Request, res: Response) => {
+app.get('/api/profiles/:userId', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { userId } = req.params;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only view their own profile." });
+    }
+
     const pool = getDbPool();
     const [rows]: any = await pool.query('SELECT * FROM user_profiles WHERE user_id = ?', [userId]);
     if (!rows || rows.length === 0) return res.json(null);
@@ -190,9 +335,14 @@ app.get('/api/profiles/:userId', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/profiles', async (req: Request, res: Response) => {
+app.post('/api/profiles', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const p = req.body;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== p.userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only update their own profile." });
+    }
+
     const pool = getDbPool();
     const now = new Date();
     const conditions = JSON.stringify(p.medicalConditions || []);
@@ -233,9 +383,14 @@ app.post('/api/profiles', async (req: Request, res: Response) => {
 
 // ─── Daily Logs Routes ────────────────────────────────────────────────────────
 
-app.get('/api/daily-logs/:userId', async (req: Request, res: Response) => {
+app.get('/api/daily-logs/:userId', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { userId } = req.params;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only view their own daily logs." });
+    }
+
     const pool = getDbPool();
     const [rows]: any = await pool.query(
       'SELECT * FROM daily_logs WHERE user_id = ? ORDER BY date ASC',
@@ -269,9 +424,14 @@ app.get('/api/daily-logs/:userId', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/daily-logs', async (req: Request, res: Response) => {
+app.post('/api/daily-logs', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const l = req.body;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== l.userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only create their own daily logs." });
+    }
+
     const pool = getDbPool();
     const id = l.id || uuidv4();
     const now = new Date();
@@ -312,9 +472,14 @@ app.post('/api/daily-logs', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/api/daily-logs/:userId/:logId', async (req: Request, res: Response) => {
+app.delete('/api/daily-logs/:userId/:logId', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { userId, logId } = req.params;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only delete their own daily logs." });
+    }
+
     const pool = getDbPool();
     await pool.query('DELETE FROM daily_logs WHERE user_id = ? AND id = ?', [userId, logId]);
     return res.json({ success: true });
@@ -325,9 +490,14 @@ app.delete('/api/daily-logs/:userId/:logId', async (req: Request, res: Response)
 
 // ─── ML Snapshots Routes ──────────────────────────────────────────────────────
 
-app.get('/api/ml-snapshots/:userId', async (req: Request, res: Response) => {
+app.get('/api/ml-snapshots/:userId', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { userId } = req.params;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only view their own ML snapshots." });
+    }
+
     const pool = getDbPool();
     const [rows]: any = await pool.query(
       'SELECT * FROM ml_snapshots WHERE user_id = ? ORDER BY date ASC',
@@ -352,9 +522,14 @@ app.get('/api/ml-snapshots/:userId', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/ml-snapshots', async (req: Request, res: Response) => {
+app.post('/api/ml-snapshots', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const s = req.body;
+
+    if (req.user!.role === 'patient' && req.user!.userId !== s.userId) {
+      return res.status(403).json({ success: false, error: "Forbidden: Patients can only save their own ML snapshots." });
+    }
+
     const pool = getDbPool();
     const id = s.id || uuidv4();
     const now = new Date();
@@ -383,12 +558,25 @@ app.post('/api/ml-snapshots', async (req: Request, res: Response) => {
 
 // ─── Tip Reviews Routes ───────────────────────────────────────────────────────
 
-app.get('/api/tip-reviews', async (_req: Request, res: Response) => {
+app.get('/api/tip-reviews', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const pool = getDbPool();
-    const [rows]: any = await pool.query(
-      'SELECT * FROM tip_reviews ORDER BY date ASC, category ASC, item_index ASC'
-    );
+    let rows: any[];
+
+    if (req.user!.role === 'doctor') {
+      // Doctors can view all tip reviews across all patients
+      const [allRows]: any = await pool.query(
+        'SELECT * FROM tip_reviews ORDER BY date ASC, category ASC, item_index ASC'
+      );
+      rows = allRows;
+    } else {
+      // Patients are restricted exclusively to their own tip reviews
+      const [patientRows]: any = await pool.query(
+        'SELECT * FROM tip_reviews WHERE patient_id = ? ORDER BY date ASC, category ASC, item_index ASC',
+        [req.user!.userId]
+      );
+      rows = patientRows;
+    }
 
     const reviews = rows.map((r: any) => ({
       id: r.id,
@@ -413,9 +601,18 @@ app.get('/api/tip-reviews', async (_req: Request, res: Response) => {
   }
 });
 
-app.post('/api/tip-reviews/sync', async (req: Request, res: Response) => {
+app.post('/api/tip-reviews/sync', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { patient, date, recs } = req.body;
+
+    if (!patient || !patient.id) {
+      return res.status(400).json({ success: false, error: 'Patient object with id is required.' });
+    }
+
+    if (req.user!.role === 'patient' && req.user!.userId !== patient.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden: Patients can only sync their own tip reviews.' });
+    }
+
     const pool = getDbPool();
     const now = new Date();
 
@@ -468,7 +665,8 @@ app.post('/api/tip-reviews/sync', async (req: Request, res: Response) => {
   }
 });
 
-app.put('/api/tip-reviews/:id/status', async (req: Request, res: Response) => {
+// Doctor Action: update status of individual tip review
+app.put('/api/tip-reviews/:id/status', requireAuth, requireRole('doctor'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { status, approvedText, reviewedBy } = req.body;
@@ -482,7 +680,7 @@ app.put('/api/tip-reviews/:id/status', async (req: Request, res: Response) => {
         reviewed_by = ?,
         reviewed_at = ?
        WHERE id = ?`,
-      [status, approvedText, reviewedBy, now, id]
+      [status, approvedText, reviewedBy || req.user?.email || 'Doctor', now, id]
     );
 
     return res.json({ success: true });
@@ -491,7 +689,8 @@ app.put('/api/tip-reviews/:id/status', async (req: Request, res: Response) => {
   }
 });
 
-app.put('/api/tip-reviews/group', async (req: Request, res: Response) => {
+// Doctor Action: bulk approve/reject a tip category group
+app.put('/api/tip-reviews/group', requireAuth, requireRole('doctor'), async (req: AuthRequest, res: Response) => {
   try {
     const { key, status, block, reviewedBy } = req.body;
     const pool = getDbPool();
@@ -515,7 +714,7 @@ app.put('/api/tip-reviews/group', async (req: Request, res: Response) => {
           reviewed_by = ?,
           reviewed_at = ?
          WHERE id = ?`,
-        [rowStatus, text, reviewedBy, now, row.id]
+        [rowStatus, text, reviewedBy || req.user?.email || 'Doctor', now, row.id]
       );
     }
 
@@ -535,4 +734,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
+
+export { app };

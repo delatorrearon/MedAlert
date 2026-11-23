@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ConfirmProvider, useConfirm } from './context/ConfirmContext';
 import AuthPage from './pages/AuthPage';
 import OnboardingPage from './pages/OnboardingPage';
 import DoctorDashboard from './pages/DoctorDashboard';
@@ -110,6 +111,7 @@ function avg(nums: number[]) {
 
 function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () => void }) {
   const { user, logout } = useAuth();
+  const { confirm } = useConfirm();
   const dm = darkMode;
 
   const [view, setView]             = useState<View>('dashboard');
@@ -120,6 +122,36 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
   const [insightsAdvancedOpen, setInsightsAdvancedOpen] = useState(false);
+
+  const handleLogout = async () => {
+    const ok = await confirm({
+      title: 'Sign Out',
+      message: 'Are you sure you want to sign out of your account?',
+      confirmText: 'Sign Out',
+      cancelText: 'Stay Logged In',
+      variant: 'danger',
+      iconType: 'logout',
+    });
+    if (ok) {
+      logout();
+    }
+  };
+
+  const handleDeleteLog = async (logId: string, logDateStr: string) => {
+    if (!user) return;
+    const ok = await confirm({
+      title: 'Delete Daily Log',
+      message: `Are you sure you want to permanently delete your health log for ${format(parseISO(logDateStr), 'MMMM d, yyyy')}? This cannot be undone.`,
+      confirmText: 'Delete Log',
+      cancelText: 'Keep Log',
+      variant: 'danger',
+      iconType: 'trash',
+    });
+    if (ok) {
+      dbLogs.delete(user.id, logId);
+      setLogs((prev) => prev.filter((l) => l.id !== logId));
+    }
+  };
 
   // Daily log form (any date)
   const today = new Date().toISOString().split('T')[0];
@@ -172,15 +204,40 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [logDate, existingForDate?.id, profile?.weight, profile?.activityLevel]);
 
-  const saveProfile = () => {
+  const saveProfile = async () => {
     if (!user || !profile) return;
+    const ok = await confirm({
+      title: 'Update Health Profile',
+      message: 'Are you sure you want to save changes to your health profile? This will recalibrate your baseline daily macro and calorie targets.',
+      confirmText: 'Save Profile',
+      cancelText: 'Keep Editing',
+      variant: 'primary',
+      iconType: 'check',
+    });
+    if (!ok) return;
+
     profiles.save({ ...profile, userId: user.id });
     setProfileSaved(true);
     setTimeout(() => setProfileSaved(false), 2500);
   };
 
-  const saveLog = () => {
+  const saveLog = async () => {
     if (!user) return;
+    const isUpdating = Boolean(existingForDate);
+    const formattedDate = logDate === today ? 'today' : format(parseISO(logDate), 'MMMM d, yyyy');
+
+    const ok = await confirm({
+      title: isUpdating ? 'Update Daily Log' : 'Save Daily Log',
+      message: isUpdating
+        ? `Are you sure you want to update your health log for ${formattedDate}? Your daily metrics and ML risk engine predictions will be recalculated with these new values.`
+        : `Submit your health log for ${formattedDate}? The ML risk engine will calculate your health scores based on these metrics.`,
+      confirmText: isUpdating ? 'Update Log' : 'Save Log',
+      cancelText: 'Keep Editing',
+      variant: 'primary',
+      iconType: 'check',
+    });
+    if (!ok) return;
+
     const calories = logForm.calories ?? getDefaultLogForm(profile).calories ?? 2000;
     const trackMacros = logForm.trackMacros ?? false;
     const meals: MealEntry[] = logForm.meals ?? [];
@@ -701,9 +758,19 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                   <button
                     type="button"
                     onClick={() => { setLogDate(log.date); setView('dailyLog'); }}
-                    className="text-xs font-medium px-2.5 py-1 rounded-lg bg-green-600 text-white hover:bg-green-700"
+                    className="text-xs font-medium px-2.5 py-1 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
                   >
                     Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteLog(log.id, log.date)}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-lg transition-colors ${
+                      dm ? 'bg-gray-800 text-red-400 hover:bg-red-950/40' : 'bg-red-50 text-red-600 hover:bg-red-100'
+                    }`}
+                    title="Delete log entry"
+                  >
+                    Delete
                   </button>
                 </div>
               </div>
@@ -1013,7 +1080,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
               className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-yellow-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
               {dm ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <button onClick={logout}
+            <button onClick={handleLogout}
               className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-red-400 hover:bg-gray-700' : 'bg-gray-100 text-red-500 hover:bg-red-50'}`}
               title="Sign out">
               <LogOut className="w-4 h-4" />
@@ -1082,15 +1149,19 @@ function AuthGate() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
-  if (!isAuthenticated) return <AuthPage darkMode={darkMode} toggleDark={toggleDark} />;
-
-  // Doctor role → review dashboard (no health onboarding needed)
-  if (user?.role === 'doctor') return <DoctorDashboard darkMode={darkMode} toggleDark={toggleDark} />;
-
-  // New user who hasn't completed onboarding yet
-  if (!user?.profileComplete) return <OnboardingPage darkMode={darkMode} />;
-
-  return <AppInner darkMode={darkMode} toggleDark={toggleDark} />;
+  return (
+    <ConfirmProvider darkMode={darkMode}>
+      {!isAuthenticated ? (
+        <AuthPage darkMode={darkMode} toggleDark={toggleDark} />
+      ) : user?.role === 'doctor' ? (
+        <DoctorDashboard darkMode={darkMode} toggleDark={toggleDark} />
+      ) : !user?.profileComplete ? (
+        <OnboardingPage darkMode={darkMode} />
+      ) : (
+        <AppInner darkMode={darkMode} toggleDark={toggleDark} />
+      )}
+    </ConfirmProvider>
+  );
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────

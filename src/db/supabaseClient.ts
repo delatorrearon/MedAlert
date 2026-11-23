@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import bcrypt from 'bcryptjs';
 import { clientEnv } from '../config/env';
 import { User, UserProfile, DailyLog, MLSnapshot, TipReview, TipRecInput, UserRole } from './database';
 
@@ -19,16 +20,6 @@ if (typeof window !== 'undefined') {
       hasKey: Boolean(cleanKey),
     });
   }
-}
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return hash.toString(16);
 }
 
 export const supabaseDb = {
@@ -57,11 +48,14 @@ export const supabaseDb = {
       return { success: false, error: 'An account with this email already exists.' };
     }
 
+    // Strong salted bcrypt hashing (cost factor 10)
+    const passwordHash = await bcrypt.hash(password, 10);
+
     const newUser = {
       id: crypto.randomUUID(),
       name: name.trim(),
       email: cleanEmail,
-      password_hash: simpleHash(password),
+      password_hash: passwordHash,
       role,
       created_at: new Date().toISOString(),
       last_login: new Date().toISOString(),
@@ -73,11 +67,11 @@ export const supabaseDb = {
       return { success: false, error: insertErr.message };
     }
 
+    // Explicitly omit password_hash from the returned user object
     const user: User = {
       id: newUser.id,
       name: newUser.name,
       email: newUser.email,
-      passwordHash: newUser.password_hash,
       role: newUser.role as UserRole,
       createdAt: newUser.created_at,
       lastLogin: newUser.last_login,
@@ -101,18 +95,24 @@ export const supabaseDb = {
       return { success: false, error: 'No account found with this email.' };
     }
 
-    if (userRow.password_hash !== simpleHash(password)) {
+    // Verify bcrypt hash
+    let passwordMatches = false;
+    if (userRow.password_hash && (userRow.password_hash.startsWith('$2a$') || userRow.password_hash.startsWith('$2b$'))) {
+      passwordMatches = await bcrypt.compare(password, userRow.password_hash);
+    }
+
+    if (!passwordMatches) {
       return { success: false, error: 'Incorrect password.' };
     }
 
     const now = new Date().toISOString();
     await supabase.from('users').update({ last_login: now }).eq('id', userRow.id);
 
+    // Explicitly omit password_hash from the returned user object
     const user: User = {
       id: userRow.id,
       name: userRow.name,
       email: userRow.email,
-      passwordHash: userRow.password_hash,
       role: userRow.role,
       createdAt: userRow.created_at,
       lastLogin: now,
@@ -124,13 +124,15 @@ export const supabaseDb = {
 
   async getAllUsers(): Promise<User[] | null> {
     if (!supabase) return null;
-    const { data, error } = await supabase.from('users').select('*');
+    // Explicitly omit password_hash from the SQL select
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, email, role, created_at, last_login, profile_complete');
     if (error || !data) return null;
     return data.map((u: any) => ({
       id: u.id,
       name: u.name,
       email: u.email,
-      passwordHash: u.password_hash || '',
       role: u.role,
       createdAt: u.created_at,
       lastLogin: u.last_login,

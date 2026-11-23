@@ -9,6 +9,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useAuth } from '../context/AuthContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { auth, dailyLogs, mlSnapshots, profiles, tipReviews, TipReview } from '../db/database';
 
 interface Props {
@@ -41,6 +42,7 @@ function barColor(level: string): string {
 
 export default function DoctorDashboard({ darkMode, toggleDark }: Props) {
   const { user, logout, refreshUser } = useAuth();
+  const { confirm } = useConfirm();
   const dm = darkMode;
 
   const [all, setAll] = useState<TipReview[]>(() => tipReviews.getAll());
@@ -161,13 +163,65 @@ export default function DoctorDashboard({ darkMode, toggleDark }: Props) {
     );
   };
 
+  const handleLogout = async () => {
+    const ok = await confirm({
+      title: 'Sign Out',
+      message: 'Are you sure you want to sign out of the Doctor Portal?',
+      confirmText: 'Sign Out',
+      cancelText: 'Stay Logged In',
+      variant: 'danger',
+      iconType: 'logout',
+    });
+    if (ok) {
+      logout();
+    }
+  };
+
+  const handleGroupDecision = async (g: TipGroup, status: 'approved' | 'rejected') => {
+    const isApproved = g.rows.some((r) => r.status === 'approved');
+    if (status === 'rejected') {
+      const ok = await confirm({
+        title: isApproved ? 'Revoke Clinical Approval' : 'Reject Recommendations',
+        message: isApproved
+          ? `Are you sure you want to revoke the approved recommendations for ${selected?.user.name ?? 'this patient'}? This will remove them from the patient's view.`
+          : `Are you sure you want to reject the AI recommendations for ${g.category}?`,
+        confirmText: isApproved ? 'Revoke Approval' : 'Reject Tips',
+        cancelText: 'Keep As Is',
+        variant: 'danger',
+        iconType: 'alert',
+      });
+      if (!ok) return;
+    } else {
+      const ok = await confirm({
+        title: 'Approve & Publish Recommendations',
+        message: `Publish your final clinical recommendations for "${g.category}" to ${selected?.user.name ?? 'this patient'}?`,
+        confirmText: 'Publish Recommendation',
+        cancelText: 'Review More',
+        variant: 'primary',
+        iconType: 'check',
+      });
+      if (!ok) return;
+    }
+    submitGroup(g, status);
+  };
+
   const openSelfModal = () => {
     setSelfName(user?.name || '');
     setSelfModal(true);
   };
 
-  const saveSelfProfile = () => {
+  const saveSelfProfile = async () => {
     if (!user || !selfName.trim()) return;
+    const ok = await confirm({
+      title: 'Update Doctor Name',
+      message: `Are you sure you want to change your display name to "${selfName.trim()}"?`,
+      confirmText: 'Update Name',
+      cancelText: 'Cancel',
+      variant: 'primary',
+      iconType: 'check',
+    });
+    if (!ok) return;
+
     auth.updateUser(user.id, { name: selfName.trim() });
     refreshUser();
     setSelfModal(false);
@@ -208,7 +262,7 @@ export default function DoctorDashboard({ darkMode, toggleDark }: Props) {
               className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-yellow-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
               {dm ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <button onClick={logout}
+            <button onClick={handleLogout}
               className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-red-400 hover:bg-gray-700' : 'bg-gray-100 text-red-500 hover:bg-red-50'}`}
               title="Sign out">
               <LogOut className="w-4 h-4" />
@@ -506,12 +560,12 @@ export default function DoctorDashboard({ darkMode, toggleDark }: Props) {
                                 )}
                                 <div className="flex gap-2 mt-2.5 justify-end">
                                   {!allRejected && (
-                                    <button onClick={() => submitGroup(g, 'rejected')}
+                                    <button onClick={() => handleGroupDecision(g, 'rejected')}
                                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
                                       <XCircle className="w-4 h-4" /> {isApproved ? 'Revoke Final' : 'Reject'}
                                     </button>
                                   )}
-                                  <button onClick={() => submitGroup(g, 'approved')}
+                                  <button onClick={() => handleGroupDecision(g, 'approved')}
                                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors">
                                     <CheckCircle className="w-4 h-4" />
                                     {isApproved ? 'Update & Keep Final' : allRejected ? 'Re-approve' : 'Approve & Make Final'}

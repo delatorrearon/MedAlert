@@ -93,8 +93,9 @@ CREATE TABLE IF NOT EXISTS public.tip_reviews (
 );
 
 -- ==============================================================================
--- ROW LEVEL SECURITY (RLS) & PUBLIC ACCESS POLICIES
--- Configures open read/write access for the client anon key
+-- HARDENED ROW LEVEL SECURITY (RLS) POLICIES
+-- Ensures patient data isolation and role-based doctor access.
+-- Protects against unauthorized cross-user access and sensitive data exposure.
 -- ==============================================================================
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
@@ -103,25 +104,148 @@ ALTER TABLE public.daily_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ml_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tip_reviews ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies if re-running
+-- 1. Drop existing insecure open policies
 DROP POLICY IF EXISTS "Public full access to users" ON public.users;
 DROP POLICY IF EXISTS "Public full access to user_profiles" ON public.user_profiles;
 DROP POLICY IF EXISTS "Public full access to daily_logs" ON public.daily_logs;
 DROP POLICY IF EXISTS "Public full access to ml_snapshots" ON public.ml_snapshots;
 DROP POLICY IF EXISTS "Public full access to tip_reviews" ON public.tip_reviews;
 
--- Create policies granting access to client anon key
-CREATE POLICY "Public full access to users" ON public.users
-  FOR ALL USING (true) WITH CHECK (true);
+-- Drop previous hardened policies to ensure clean execution
+DROP POLICY IF EXISTS "Users can read own record or doctors read roster" ON public.users;
+DROP POLICY IF EXISTS "Users can insert own record" ON public.users;
+DROP POLICY IF EXISTS "Users can update own record" ON public.users;
 
-CREATE POLICY "Public full access to user_profiles" ON public.user_profiles
-  FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can read own profile or doctors read patient profiles" ON public.user_profiles;
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.user_profiles;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.user_profiles;
 
-CREATE POLICY "Public full access to daily_logs" ON public.daily_logs
-  FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can read own logs or doctors read patient logs" ON public.daily_logs;
+DROP POLICY IF EXISTS "Users can insert own logs" ON public.daily_logs;
+DROP POLICY IF EXISTS "Users can update own logs" ON public.daily_logs;
+DROP POLICY IF EXISTS "Users can delete own logs" ON public.daily_logs;
 
-CREATE POLICY "Public full access to ml_snapshots" ON public.ml_snapshots
-  FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can read own snapshots or doctors read patient snapshots" ON public.ml_snapshots;
+DROP POLICY IF EXISTS "Users can insert own snapshots" ON public.ml_snapshots;
+DROP POLICY IF EXISTS "Users can update own snapshots" ON public.ml_snapshots;
 
-CREATE POLICY "Public full access to tip_reviews" ON public.tip_reviews
-  FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Patients read own tips or doctors read all tips" ON public.tip_reviews;
+DROP POLICY IF EXISTS "Patients and doctors can insert tips" ON public.tip_reviews;
+DROP POLICY IF EXISTS "Only doctors can update tip review decisions" ON public.tip_reviews;
+
+-- Helper function: verify if the calling user has doctor role
+CREATE OR REPLACE FUNCTION public.is_doctor()
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.users
+    WHERE id = auth.uid() AND role = 'doctor'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ─── 1. USERS TABLE POLICIES ─────────────────────────────────────────────────
+-- Read: Patient views own record; Doctor views patient roster
+CREATE POLICY "Users can read own record or doctors read roster" ON public.users
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = id OR public.is_doctor());
+
+-- Insert: Self-registration (anon or authenticated user matching id)
+CREATE POLICY "Users can insert own record" ON public.users
+  FOR INSERT
+  TO authenticated, anon
+  WITH CHECK (auth.uid() = id OR auth.uid() IS NULL);
+
+-- Update: Patient or Doctor updates only their own record
+CREATE POLICY "Users can update own record" ON public.users
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
+
+-- ─── 2. USER PROFILES TABLE POLICIES ──────────────────────────────────────────
+-- Read: Patient views own profile; Doctor views patient profile
+CREATE POLICY "Users can read own profile or doctors read patient profiles" ON public.user_profiles
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id OR public.is_doctor());
+
+-- Insert: Patient creates own profile
+CREATE POLICY "Users can insert own profile" ON public.user_profiles
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Update: Patient modifies own profile
+CREATE POLICY "Users can update own profile" ON public.user_profiles
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- ─── 3. DAILY LOGS TABLE POLICIES ─────────────────────────────────────────────
+-- Read: Patient views own logs; Doctor views patient logs
+CREATE POLICY "Users can read own logs or doctors read patient logs" ON public.daily_logs
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id OR public.is_doctor());
+
+-- Insert: Patient inserts own daily log
+CREATE POLICY "Users can insert own logs" ON public.daily_logs
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Update: Patient updates own daily log
+CREATE POLICY "Users can update own logs" ON public.daily_logs
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Delete: Patient deletes own daily log
+CREATE POLICY "Users can delete own logs" ON public.daily_logs
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- ─── 4. ML SNAPSHOTS TABLE POLICIES ───────────────────────────────────────────
+-- Read: Patient views own snapshots; Doctor views patient snapshots
+CREATE POLICY "Users can read own snapshots or doctors read patient snapshots" ON public.ml_snapshots
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id OR public.is_doctor());
+
+-- Insert: Patient records own ML snapshot
+CREATE POLICY "Users can insert own snapshots" ON public.ml_snapshots
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Update: Patient updates own ML snapshot
+CREATE POLICY "Users can update own snapshots" ON public.ml_snapshots
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- ─── 5. TIP REVIEWS TABLE POLICIES ────────────────────────────────────────────
+-- Read: Patient views only their own tips; Doctor views all tips across patients
+CREATE POLICY "Patients read own tips or doctors read all tips" ON public.tip_reviews
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = patient_id OR public.is_doctor());
+
+-- Insert: Patient syncs generated tips, or Doctor creates tip
+CREATE POLICY "Patients and doctors can insert tips" ON public.tip_reviews
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = patient_id OR public.is_doctor());
+
+-- Update: STRICTLY DOCTORS ONLY — patients cannot alter review status or approval text
+CREATE POLICY "Only doctors can update tip review decisions" ON public.tip_reviews
+  FOR UPDATE
+  TO authenticated
+  USING (public.is_doctor())
+  WITH CHECK (public.is_doctor());
