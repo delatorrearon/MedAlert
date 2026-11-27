@@ -88,7 +88,7 @@ export default function MacroCompare({ label, actual, target, dm, mutedCls }: Ma
           <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
             worst === 'good' ? 'bg-green-100 text-green-700' : worst === 'warn' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
           }`}>
-            {worst === 'good' ? 'Within targets' : worst === 'warn' ? 'Watch macro balance' : 'Macro targets missed'}
+            {worst === 'good' ? 'Within targets' : worst === 'warn' ? 'Watch nutrition balance' : 'Nutrition targets missed'}
           </span>
         </div>
       )}

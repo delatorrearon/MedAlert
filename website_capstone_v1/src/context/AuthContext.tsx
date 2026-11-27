@@ -8,7 +8,7 @@ interface AuthContextValue {
   register: (name: string, email: string, password: string, role?: UserRole) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   refreshUser: () => void;
-  completeProfile: () => void;
+  completeProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -37,9 +37,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(auth.getCurrentUser());
   }, []);
 
-  const completeProfile = useCallback(() => {
+  const completeProfile = useCallback(async () => {
     if (!user) return;
-    auth.markProfileComplete(user.id);
+    await auth.markProfileCompleteAsync(user.id);
     setUser(u => u ? { ...u, profileComplete: true } : u);
   }, [user]);
 

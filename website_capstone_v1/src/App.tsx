@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Moon, Sun, Heart, Activity, Apple, Brain, Droplets, Scale,
-  Clock, CheckCircle, TrendingUp, TrendingDown, User, Coffee,
-  Dumbbell, Calendar, Plus, Sparkles, LogOut, BarChart2,
-  ChevronDown, ChevronRight, Shield, Database, Flame, Beef, Wheat,
+  Heart, Activity, Apple, Brain, Droplets, Scale,
+  Clock, TrendingUp, TrendingDown, Coffee,
+  Dumbbell, Calendar, Plus, Sparkles, BarChart2,
+  ChevronDown, ChevronRight, Database, Flame, Beef, Wheat,
+  AlertTriangle, Info,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -13,21 +14,31 @@ import {
 import { format, parseISO } from 'date-fns';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ConfirmProvider, useConfirm } from './context/ConfirmContext';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
 import AuthPage from './pages/AuthPage';
 import OnboardingPage from './pages/OnboardingPage';
 import DoctorDashboard from './pages/DoctorDashboard';
+import AccountPage from './pages/AccountPage';
+import HeaderUserMenu from './components/HeaderUserMenu';
 import {
   profiles, dailyLogs as dbLogs, mlSnapshots, tipReviews,
+  syncAllFromServer,
   UserProfile, DailyLog, MLSnapshot, MealEntry,
 } from './db/database';
 import { runMLAnalysis, MLResult, estimateMacrosFromCalories } from './utils/mlEngine';
-import { macroTargetsForProfile, mealTotals } from './utils/foodEngine';
-import DailyLogForm, { getDefaultLogForm } from './components/DailyLogForm';
+import {
+  classifyMealQuality,
+  foodQualityLabel,
+  formatServingBreakdown,
+  macroTargetsForProfile,
+  mealTotals,
+} from './utils/foodEngine';
+import DailyLogForm, { getDefaultLogForm, getMissedLogDates } from './components/DailyLogForm';
 import MacroCompare from './components/MacroCompare';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type View = 'dashboard' | 'dailyLog' | 'profile' | 'insights' | 'history';
+type View = 'dashboard' | 'dailyLog' | 'insights' | 'history' | 'account';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,12 +118,100 @@ function avg(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
+function getOverallRiskLabel(score: number): { label: string; cls: (dm: boolean) => string } {
+  if (score < 30) return { label: 'Low Risk', cls: (dm) => dm ? 'bg-green-900/30 text-green-300' : 'bg-green-100 text-green-800' };
+  if (score < 50) return { label: 'Moderate Risk', cls: (dm) => dm ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-100 text-yellow-800' };
+  if (score < 70) return { label: 'High Risk', cls: (dm) => dm ? 'bg-orange-900/30 text-orange-300' : 'bg-orange-100 text-orange-800' };
+  return { label: 'Critical Risk', cls: (dm) => dm ? 'bg-red-900/30 text-red-300' : 'bg-red-100 text-red-800' };
+}
+
+function getBmiCategory(bmiVal: number): { label: string; cls: (dm: boolean) => string } {
+  if (bmiVal < 18.5) return { label: 'Underweight', cls: (dm) => dm ? 'bg-blue-900/30 text-blue-300' : 'bg-blue-100 text-blue-700' };
+  if (bmiVal < 25) return { label: 'Normal', cls: (dm) => dm ? 'bg-green-900/30 text-green-300' : 'bg-green-100 text-green-700' };
+  if (bmiVal < 30) return { label: 'Overweight', cls: (dm) => dm ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-100 text-yellow-700' };
+  return { label: 'Obese', cls: (dm) => dm ? 'bg-red-900/30 text-red-300' : 'bg-red-100 text-red-700' };
+}
+
+function HealthSymbolLegend({ dm, mutedCls }: { dm: boolean; mutedCls: string }) {
+  return (
+    <div className={`rounded-2xl border p-4 ${
+      dm
+        ? 'bg-gray-900 border-gray-800 shadow-sm'
+        : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+    }`}>
+      <div className="flex items-center gap-2 mb-3">
+        <Info className="w-4 h-4 accent-text flex-shrink-0" />
+        <h4 className={`text-sm font-semibold ${dm ? 'text-white' : 'text-gray-900'}`}>
+          Symbol &amp; Rating Legend
+        </h4>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        {/* Trend indicators */}
+        <div className={`rounded-xl p-3 space-y-2 border ${dm ? 'bg-gray-800/60 border-gray-700/60' : 'bg-slate-50 border-gray-200/80'}`}>
+          <p className={`font-semibold ${dm ? 'text-gray-200' : 'text-gray-800'}`}>Trend Arrows (under title)</p>
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-green-600 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Improving:</strong> Better than your previous week</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-4 h-1 rounded bg-yellow-500 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Stable:</strong> Steady, or under 8 days logged</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <TrendingDown className="w-4 h-4 text-red-600 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Worsening:</strong> Declined from previous week</span>
+          </div>
+        </div>
+
+        {/* Risk levels */}
+        <div className={`rounded-xl p-3 space-y-2 border ${dm ? 'bg-gray-800/60 border-gray-700/60' : 'bg-slate-50 border-gray-200/80'}`}>
+          <p className={`font-semibold ${dm ? 'text-gray-200' : 'text-gray-800'}`}>Risk Badges &amp; Bars (on right)</p>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full font-semibold ${getRiskColor('low', dm)}`}>Low</span>
+            <span className={mutedCls}>0–29% · Healthy range</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full font-semibold ${getRiskColor('moderate', dm)}`}>Moderate</span>
+            <span className={mutedCls}>30–49% · Room to improve</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full font-semibold ${getRiskColor('high', dm)}`}>High</span>
+            <span className={mutedCls}>50–69% · Needs attention</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full font-semibold ${getRiskColor('critical', dm)}`}>Critical</span>
+            <span className={mutedCls}>70–100% · Consult your doctor</span>
+          </div>
+        </div>
+
+        {/* Metric status dots */}
+        <div className={`rounded-xl p-3 space-y-2 border ${dm ? 'bg-gray-800/60 border-gray-700/60' : 'bg-slate-50 border-gray-200/80'}`}>
+          <p className={`font-semibold ${dm ? 'text-gray-200' : 'text-gray-800'}`}>Habit Status Dots (inside card)</p>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Green:</strong> Meeting daily target</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Amber:</strong> Slightly off target</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0" />
+            <span className={mutedCls}><strong className={dm ? 'text-gray-200' : 'text-gray-900'}>Red:</strong> Needs improvement</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App Inner ───────────────────────────────────────────────────────────
 
-function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () => void }) {
+function AppInner() {
   const { user, logout } = useAuth();
+  const { darkMode: dm, activePalette } = useTheme();
   const { confirm } = useConfirm();
-  const dm = darkMode;
 
   const [view, setView]             = useState<View>('dashboard');
   const [profile, setProfile]       = useState<UserProfile | null>(null);
@@ -154,21 +253,32 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
   };
 
   // Daily log form (any date)
-  const today = new Date().toISOString().split('T')[0];
+  const today = format(new Date(), 'yyyy-MM-dd');
   const [logDate, setLogDate] = useState(today);
   const existingForDate = logs.find(l => l.date === logDate);
   const [logForm, setLogForm] = useState<Partial<DailyLog>>({});
   const [logSaved, setLogSaved] = useState(false);
 
-  // Load user data
+  // Load user data & refresh after remote sync completes
   useEffect(() => {
     if (!user) return;
-    const p = profiles.get(user.id);
-    setProfile(p || profiles.defaultProfile(user.id));
-    const l = dbLogs.getAll(user.id);
-    setLogs(l);
-    const s = mlSnapshots.getAll(user.id);
-    setSnapshots(s);
+    const loadFromStore = () => {
+      const p = profiles.get(user.id);
+      setProfile(p || profiles.defaultProfile(user.id));
+      setLogs(dbLogs.getAll(user.id));
+      setSnapshots(mlSnapshots.getAll(user.id));
+    };
+    loadFromStore();
+
+    let active = true;
+    void syncAllFromServer().then(() => {
+      if (!active) return;
+      loadFromStore();
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+    };
   }, [user]);
 
   // Run ML when logs / profile change
@@ -208,7 +318,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
     if (!user || !profile) return;
     const ok = await confirm({
       title: 'Update Health Profile',
-      message: 'Are you sure you want to save changes to your health profile? This will recalibrate your baseline daily macro and calorie targets.',
+      message: 'Save changes to your health profile? Your daily calorie and nutrition targets will be updated to match.',
       confirmText: 'Save Profile',
       cancelText: 'Keep Editing',
       variant: 'primary',
@@ -216,7 +326,17 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
     });
     if (!ok) return;
 
-    profiles.save({ ...profile, userId: user.id });
+    const cleanedConditions = (profile.medicalConditions || []).filter(c => c !== 'obesity');
+    const normalizedDiet = ['balanced', 'vegan', 'unspecified'].includes(profile.dietType)
+      ? profile.dietType
+      : 'unspecified';
+    await profiles.saveAsync({
+      ...profile,
+      userId: user.id,
+      dietType: normalizedDiet,
+      medicalConditions: cleanedConditions,
+    });
+    setProfile(p => p ? { ...p, dietType: normalizedDiet, medicalConditions: cleanedConditions } : p);
     setProfileSaved(true);
     setTimeout(() => setProfileSaved(false), 2500);
   };
@@ -229,8 +349,8 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
     const ok = await confirm({
       title: isUpdating ? 'Update Daily Log' : 'Save Daily Log',
       message: isUpdating
-        ? `Are you sure you want to update your health log for ${formattedDate}? Your daily metrics and ML risk engine predictions will be recalculated with these new values.`
-        : `Submit your health log for ${formattedDate}? The ML risk engine will calculate your health scores based on these metrics.`,
+        ? `Update your health log for ${formattedDate}? Your daily summary and health scores will be refreshed with these new numbers.`
+        : `Save your health log for ${formattedDate}? Your daily health scores and insights will be updated based on these entries.`,
       confirmText: isUpdating ? 'Update Log' : 'Save Log',
       cancelText: 'Keep Editing',
       variant: 'primary',
@@ -258,7 +378,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
       protein: macros.protein,
       carbs: macros.carbs,
       fats: macros.fats,
-      foodQuality: logForm.foodQuality ?? 'balanced',
+      foodQuality: classifyMealQuality(meals, profile),
       meals,
       trackMacros,
       trackWeight: logForm.trackWeight ?? false,
@@ -271,9 +391,19 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
 
   const streak = user ? dbLogs.getStreak(user.id) : 0;
 
-  const bmi = profile && profile.height > 0
-    ? (profile.weight / Math.pow(profile.height / 100, 2)).toFixed(1)
-    : '—';
+  const latestLoggedWeight = [...logs]
+    .reverse()
+    .find((l) => l.weight != null && l.weight > 0)?.weight;
+  const effectiveWeight =
+    latestLoggedWeight && latestLoggedWeight > 0
+      ? latestLoggedWeight
+      : (profile?.weight ?? 0);
+  const bmiValue =
+    profile && profile.height > 0 && effectiveWeight > 0
+      ? effectiveWeight / Math.pow(profile.height / 100, 2)
+      : null;
+  const bmi = bmiValue !== null ? bmiValue.toFixed(1) : '—';
+  const bmiCat = bmiValue !== null ? getBmiCategory(bmiValue) : null;
 
   // Doctor-approved tips visible to the patient (only these are "final")
   const approvedTips = user ? tipReviews.getApprovedForDate(user.id, today) : [];
@@ -290,74 +420,261 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
 
   // Shared styling
   const card = (children: React.ReactNode, extra = '') => (
-    <div className={`rounded-2xl shadow-sm border p-5 ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'} ${extra}`}>
+    <div className={`rounded-2xl border p-5 ${
+      dm
+        ? 'bg-gray-900 border-gray-800 shadow-sm'
+        : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+    } ${extra}`}>
       {children}
     </div>
   );
 
-  const inputCls = `w-full px-4 py-2.5 rounded-xl border text-sm transition-all focus:outline-none focus:ring-2 focus:ring-green-500 ${
-    dm ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' : 'bg-white border-gray-200 text-gray-800'
+  const inputCls = `w-full px-4 py-2.5 rounded-xl border text-sm transition-all accent-focus ${
+    dm
+      ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500'
+      : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'
   }`;
-  const labelCls = `block text-sm font-medium mb-1.5 ${dm ? 'text-gray-300' : 'text-gray-700'}`;
-  const mutedCls = `text-sm ${dm ? 'text-gray-400' : 'text-gray-500'}`;
+  const labelCls = `block text-sm font-medium mb-1.5 ${dm ? 'text-gray-200' : 'text-gray-800'}`;
+  const mutedCls = `text-sm ${dm ? 'text-gray-400' : 'text-gray-600'}`;
 
   const navItems: { id: View; label: string; icon: typeof Activity }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: Activity },
     { id: 'dailyLog',  label: 'Daily Log',  icon: Plus },
     { id: 'insights',  label: 'Insights',   icon: Sparkles },
     { id: 'history',   label: 'History',    icon: BarChart2 },
-    { id: 'profile',   label: 'Profile',    icon: User },
   ];
 
   // ── Dashboard ──────────────────────────────────────────────────────────────
   const renderDashboard = () => {
     const snapshotData = snapshots.slice(-14);
     const noData = logs.length === 0;
+    const hasLoggedToday = logs.some(l => l.date === today);
+    const missedPastDays = logs.length > 0 ? getMissedLogDates(logs, 7) : [];
+    const todayLog = logs.find(l => l.date === today);
+    const recommendedCalories = macroTargetsForProfile(profile).calories;
+    const todayCalorieOverage = todayLog ? todayLog.calories - recommendedCalories : 0;
+    const highRisks = mlResult
+      ? mlResult.risks.filter(r => r.riskLevel === 'high' || r.riskLevel === 'critical')
+      : [];
+    const hasCriticalRisk = highRisks.some(r => r.riskLevel === 'critical');
+    const overallRiskMeta = mlResult ? getOverallRiskLabel(mlResult.overallScore) : null;
 
     return (
       <div className="space-y-6">
+        {/* Top Dashboard Alerts */}
+        {(highRisks.length > 0 || todayCalorieOverage > 0 || !hasLoggedToday || missedPastDays.length > 0) && (
+          <div className="space-y-3">
+            {/* High / Critical Risk Alert */}
+            {highRisks.length > 0 && (
+              <div
+                role="alert"
+                className={`rounded-2xl border p-4 flex items-start justify-between gap-3 flex-wrap ${
+                  hasCriticalRisk
+                    ? dm ? 'bg-red-950/40 border-red-800 text-red-200' : 'bg-red-50 border-red-200 text-red-900'
+                    : dm ? 'bg-orange-950/40 border-orange-800 text-orange-200' : 'bg-orange-50 border-orange-200 text-orange-900'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className={`w-5 h-5 flex-shrink-0 mt-0.5 ${hasCriticalRisk ? 'text-red-500' : 'text-orange-500'}`} />
+                  <div>
+                    <p className="text-sm font-bold">
+                      {hasCriticalRisk ? 'Critical Health Risk Alert' : 'High Health Risk Alert'}
+                    </p>
+                    <p className="text-xs mt-0.5 opacity-90">
+                      Attention needed in:{' '}
+                      {highRisks
+                        .map(r => `${r.category} (${r.score}% · ${r.riskLevel.charAt(0).toUpperCase() + r.riskLevel.slice(1)})`)
+                        .join(', ')}
+                      .
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setView('insights')}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors ${
+                    hasCriticalRisk
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : 'bg-orange-500 text-white hover:bg-orange-600'
+                  }`}
+                >
+                  Review Insights
+                </button>
+              </div>
+            )}
+
+            {/* Calorie Exceeded Alert */}
+            {todayLog && todayCalorieOverage > 0 && (
+              <div
+                role="alert"
+                className={`rounded-2xl border p-4 flex items-start justify-between gap-3 flex-wrap ${
+                  dm ? 'bg-amber-950/40 border-amber-800 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <Flame className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-bold">Calorie Target Exceeded Today</p>
+                    <p className="text-xs mt-0.5 opacity-90">
+                      Your logged food today ({todayLog.calories.toLocaleString()} kcal) is {todayCalorieOverage.toLocaleString()} kcal above your recommended daily goal of {recommendedCalories.toLocaleString()} kcal.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setLogDate(today); setView('dailyLog'); }}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+                >
+                  Edit Today&apos;s Log
+                </button>
+              </div>
+            )}
+
+            {/* Missing Daily Log Alert */}
+            {(!hasLoggedToday || missedPastDays.length > 0) && (
+              <div
+                role="status"
+                className={`rounded-2xl border p-4 flex items-start justify-between gap-3 flex-wrap ${
+                  dm ? 'bg-blue-950/30 border-blue-800 text-blue-200' : 'bg-blue-50 border-blue-200 text-blue-900'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <Calendar className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-bold">
+                      {!hasLoggedToday ? "Today's Health Log Not Recorded Yet" : 'Missed Check-In Reminder'}
+                    </p>
+                    <p className="text-xs mt-0.5 opacity-90">
+                      {!hasLoggedToday
+                        ? 'Log your sleep, activity, water, and meals for today to keep your health summary accurate.'
+                        : 'Catch up on unlogged days from the past week to keep your trend complete.'}
+                    </p>
+                    {missedPastDays.length > 0 && (
+                      <div className="flex items-center flex-wrap gap-1.5 mt-2">
+                        <span className="text-xs font-medium opacity-80">Missed days:</span>
+                        {missedPastDays.slice(0, 5).map(d => (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => { setLogDate(d); setView('dailyLog'); }}
+                            className={`text-xs px-2 py-0.5 rounded-lg font-medium transition-colors ${
+                              dm ? 'bg-blue-900/60 text-blue-200 hover:bg-blue-800' : 'bg-white text-blue-700 border border-blue-200 hover:bg-blue-100'
+                            }`}
+                          >
+                            {format(parseISO(d), 'MMM d')}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {!hasLoggedToday && (
+                  <button
+                    type="button"
+                    onClick={() => { setLogDate(today); setView('dailyLog'); }}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                  >
+                    Log Today
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Welcome Banner */}
-        <div className="rounded-2xl p-6 bg-gradient-to-r from-green-500 to-emerald-600 text-white">
+        <div className="rounded-2xl p-6 accent-gradient shadow-md">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-xl font-bold" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.25)' }}>
+              <h2 className="text-xl font-bold text-white" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.2)' }}>
                 Good {getTimeGreeting()}, {user?.name?.split(' ')[0]}! 👋
               </h2>
-              <p className="text-green-100 text-sm mt-1">
-                {/* {noData
-                  ? 'Start your first daily log to activate ML predictions.'
-                  : `${logs.length} day${logs.length !== 1 ? 's' : ''} of data recorded — ML engine is active.`} */}
+              <p className="text-white/90 text-sm mt-1">
+                {noData
+                  ? 'Log your first day to start tracking your personalized health scores.'
+                  : `${logs.length} day${logs.length !== 1 ? 's' : ''} of health check-ins recorded — your summary is up to date.`}
               </p>
             </div>
-
           </div>
           {noData && (
             <button
               onClick={() => setView('dailyLog')}
-              className="mt-4 flex items-center gap-2 bg-white/20 hover:bg-white/30 transition-colors px-4 py-2 rounded-xl text-sm font-medium"
+              className="mt-4 flex items-center gap-2 bg-white/20 hover:bg-white/30 transition-colors px-4 py-2 rounded-xl text-sm font-medium text-white"
             >
               <Plus className="w-4 h-4" /> Log your first entry <ChevronRight className="w-4 h-4" />
             </button>
           )}
         </div>
 
-        Stats Row
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Stats Row */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: 'Overall Score', value: mlResult ? `${mlResult.overallScore}` : '—', unit: mlResult ? '/100' : '', icon: Heart,    bg: 'bg-green-100', icoCls: 'text-green-600' },
-            { label: 'Day Streak',    value: `${streak}`,        unit: ' days',             icon: Sparkles, bg: 'bg-yellow-100', icoCls: 'text-yellow-600' },
-            { label: 'BMI',           value: bmi,                unit: '',                  icon: Scale,    bg: 'bg-blue-100',   icoCls: 'text-blue-600' },
-            { label: 'Logs Recorded', value: `${logs.length}`,   unit: '',                  icon: Database, bg: 'bg-purple-100', icoCls: 'text-purple-600' },
-          ].map(({ label, value, unit, icon: Icon, bg, icoCls }) => (
-            <div key={label} className={`rounded-2xl p-4 shadow-sm border ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
-              <div className="flex items-center justify-between mb-2">
-                <p className={mutedCls}>{label}</p>
-                <div className={`p-1.5 rounded-lg ${bg}`}>
-                  <Icon className={`w-4 h-4 ${icoCls}`} />
+            {
+              label: 'Overall Score',
+              value: mlResult ? `${mlResult.overallScore}` : '—',
+              unit: mlResult ? '/100' : '',
+              badge: overallRiskMeta ? { text: overallRiskMeta.label, cls: overallRiskMeta.cls(dm) } : null,
+              desc: 'Combined daily health risk rating (0–100), where lower scores mean lower overall risk.',
+              icon: Heart,
+              bg: 'bg-green-100',
+              icoCls: 'text-green-600',
+            },
+            {
+              label: 'Day Streak',
+              value: `${streak}`,
+              unit: streak === 1 ? ' day' : ' days',
+              badge: null,
+              desc: 'Consecutive days you have saved a daily health check-in up through today.',
+              icon: Sparkles,
+              bg: 'bg-yellow-100',
+              icoCls: 'text-yellow-700',
+            },
+            {
+              label: 'BMI',
+              value: bmi,
+              unit: '',
+              badge: bmiCat ? { text: bmiCat.label, cls: bmiCat.cls(dm) } : null,
+              desc: 'Body Mass Index from your height and weight (healthy range: 18.5–24.9).',
+              icon: Scale,
+              bg: 'bg-blue-100',
+              icoCls: 'text-blue-700',
+            },
+            {
+              label: 'Logs Recorded',
+              value: `${logs.length}`,
+              unit: '',
+              badge: null,
+              desc: 'Total number of daily health logs you have saved to your account so far.',
+              icon: Database,
+              bg: 'bg-purple-100',
+              icoCls: 'text-purple-700',
+            },
+          ].map(({ label, value, unit, badge, desc, icon: Icon, bg, icoCls }) => (
+            <div key={label} className={`rounded-2xl p-4 border flex flex-col justify-between ${
+              dm
+                ? 'bg-gray-900 border-gray-800 shadow-sm'
+                : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+            }`}>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className={`text-sm font-semibold ${dm ? 'text-gray-200' : 'text-gray-700'}`}>{label}</p>
+                  <div className={`p-1.5 rounded-lg ${bg}`}>
+                    <Icon className={`w-4 h-4 ${icoCls}`} />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className={`text-2xl font-bold ${dm ? 'text-white' : 'text-gray-900'}`}>
+                    {value}<span className={`text-base font-normal ${mutedCls}`}>{unit}</span>
+                  </p>
+                  {badge && (
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${badge.cls}`}>
+                      {badge.text}
+                    </span>
+                  )}
                 </div>
               </div>
-              <p className={`text-2xl font-bold ${dm ? 'text-white' : 'text-gray-800'}`}>
-                {value}<span className={`text-base font-normal ${mutedCls}`}>{unit}</span>
+              <p className={`text-xs mt-2.5 leading-relaxed ${mutedCls}`}>
+                {desc}
               </p>
             </div>
           ))}
@@ -365,25 +682,25 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
 
         {/* No data */}
         {noData && (
-          <div className={`rounded-2xl border-2 border-dashed p-12 text-center ${dm ? 'border-gray-700' : 'border-gray-200'}`}>
-            <Brain className={`w-12 h-12 mx-auto mb-3 ${dm ? 'text-gray-600' : 'text-gray-300'}`} />
-            <h3 className={`text-lg font-semibold mb-1 ${dm ? 'text-gray-300' : 'text-gray-600'}`}>No data yet</h3>
-            <p className={`${mutedCls} mb-4`}>The ML engine needs your daily logs to start making predictions.</p>
+          <div className={`rounded-2xl border-2 border-dashed p-12 text-center ${dm ? 'border-gray-700 bg-gray-900/40' : 'border-gray-300 bg-white'}`}>
+            <Brain className={`w-12 h-12 mx-auto mb-3 ${dm ? 'text-gray-600' : 'text-gray-400'}`} />
+            <h3 className={`text-lg font-semibold mb-1 ${dm ? 'text-gray-200' : 'text-gray-800'}`}>No health logs yet</h3>
+            <p className={`${mutedCls} mb-4`}>Save your first daily check-in to start seeing your personalized health scores and trends.</p>
             <button
               onClick={() => setView('dailyLog')}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700 transition-colors"
+              className="inline-flex items-center gap-2 px-5 py-2.5 accent-bg rounded-xl font-medium transition-colors"
             >
               <Plus className="w-4 h-4" /> Start Logging
             </button>
           </div>
         )}
 
-        {/* ML analyzing */}
+        {/* Updating summary */}
         {isAnalyzing && (
-          <div className={`rounded-2xl p-4 flex items-center gap-3 ${dm ? 'bg-green-900/20 border border-green-800' : 'bg-green-50 border border-green-200'}`}>
-            <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <span className={`text-sm font-medium ${dm ? 'text-green-300' : 'text-green-700'}`}>
-              ML engine is analyzing your health patterns...
+          <div className={`rounded-2xl p-4 flex items-center gap-3 border ${dm ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200 shadow-xs'}`}>
+            <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0 accent-text" />
+            <span className="text-sm font-medium accent-text">
+              Updating your health insights...
             </span>
           </div>
         )}
@@ -391,42 +708,64 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         {/* Health Score Trend */}
         {snapshotData.length > 0 && card(
           <>
-            <h3 className={`text-base font-semibold mb-4 ${dm ? 'text-white' : 'text-gray-800'}`}>Health Score Trend</h3>
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <h3 className={`text-base font-semibold ${dm ? 'text-white' : 'text-gray-900'}`}>Health Score Trend</h3>
+                <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full ${dm ? 'bg-gray-800 text-gray-300' : 'bg-slate-100 text-gray-700 border border-gray-200'}`}>
+                  Lower = Lower Health Risk
+                </span>
+              </div>
+              <p className={`text-xs mt-1 ${mutedCls}`}>
+                Shows your daily overall health risk score (0–100) across your last 14 logged days. Keeping this line low or trending downward means your daily habits are reducing your health risk.
+              </p>
+              {snapshotData.length === 1 && (
+                <p className="text-xs mt-1 font-medium accent-text">
+                  Log more days to see your trend line develop over time.
+                </p>
+              )}
+            </div>
             <ResponsiveContainer width="100%" height={260}>
               <AreaChart data={snapshotData}>
                 <defs>
                   <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#10B981" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
+                    <stop offset="5%"  stopColor={activePalette.primaryHex} stopOpacity={0.35} />
+                    <stop offset="95%" stopColor={activePalette.primaryHex} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={dm ? '#1f2937' : '#f3f4f6'} />
-                <XAxis dataKey="date" tick={{ fill: dm ? '#6B7280' : '#9CA3AF', fontSize: 11 }}
+                <CartesianGrid strokeDasharray="3 3" stroke={dm ? '#1f2937' : '#e5e7eb'} />
+                <XAxis dataKey="date" tick={{ fill: dm ? '#9CA3AF' : '#4B5563', fontSize: 11 }}
                   tickFormatter={v => { try { return format(parseISO(v), 'MMM d'); } catch { return v; } }} />
-                <YAxis domain={[0, 100]} tick={{ fill: dm ? '#6B7280' : '#9CA3AF', fontSize: 11 }} />
+                <YAxis domain={[0, 100]} tick={{ fill: dm ? '#9CA3AF' : '#4B5563', fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: dm ? '#111827' : '#fff', border: 'none', borderRadius: 10, boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}
+                  contentStyle={{ backgroundColor: dm ? '#111827' : '#fff', border: dm ? '1px solid #374151' : '1px solid #e5e7eb', borderRadius: 10, boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}
                   labelFormatter={v => { try { return format(parseISO(v as string), 'MMMM d, yyyy'); } catch { return String(v); } }}
                 />
-                <Area type="monotone" dataKey="overallScore" stroke="#10B981" strokeWidth={2.5}
-                  fillOpacity={1} fill="url(#cg)" name="Overall Score" dot={{ fill: '#10B981', r: 3 }} />
+                <Legend />
+                <Area type="monotone" dataKey="overallScore" stroke={activePalette.primaryHex} strokeWidth={2.5}
+                  fillOpacity={1} fill="url(#cg)" name="Overall Risk Score (0–100)" dot={{ fill: activePalette.primaryHex, r: 3 }} />
               </AreaChart>
             </ResponsiveContainer>
           </>
         )}
 
-        {/* Risk Cards */}
+        {/* Health Categories + Complete Legend */}
         {mlResult && mlResult.risks.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-4">
+            <HealthSymbolLegend dm={dm} mutedCls={mutedCls} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {mlResult.risks.map((risk, i) => (
-              <div key={i} className={`rounded-2xl shadow-sm border p-5 ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'} ${getRiskBorder(risk.riskLevel)}`}>
+              <div key={i} className={`rounded-2xl border p-5 ${
+                dm
+                  ? 'bg-gray-900 border-gray-800 shadow-sm'
+                  : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+              } ${getRiskBorder(risk.riskLevel)}`}>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-xl ${dm ? 'bg-gray-800' : 'bg-gray-50'} text-green-600`}>
+                    <div className={`p-2 rounded-xl border ${dm ? 'bg-gray-800 border-gray-700' : 'bg-slate-50 border-gray-200'} accent-text`}>
                       <RiskIcon category={risk.category} />
                     </div>
                     <div>
-                      <h4 className={`font-semibold text-sm ${dm ? 'text-white' : 'text-gray-800'}`}>{risk.category}</h4>
+                      <h4 className={`font-semibold text-sm ${dm ? 'text-white' : 'text-gray-900'}`}>{risk.category}</h4>
                       <div className="flex items-center gap-1 mt-0.5">
                         <TrendIcon trend={risk.trend} />
                         <span className={`text-xs capitalize ${mutedCls}`}>{risk.trend}</span>
@@ -437,17 +776,17 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                     {risk.riskLevel.charAt(0).toUpperCase() + risk.riskLevel.slice(1)}
                   </span>
                 </div>
-                <div className={`h-2 w-full rounded-full mb-3 ${dm ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <div className={`h-2 w-full rounded-full mb-3 ${dm ? 'bg-gray-800' : 'bg-gray-200'}`}>
                   <div className={`h-full rounded-full transition-all duration-700 ${getRiskBarColor(risk.riskLevel)}`}
                     style={{ width: `${risk.score}%` }} />
                 </div>
                 <div className="flex justify-between text-xs mb-3">
                   <span className={mutedCls}>Risk Score</span>
-                  <span className={`font-semibold ${dm ? 'text-white' : 'text-gray-800'}`}>{risk.score}%</span>
+                  <span className={`font-semibold ${dm ? 'text-white' : 'text-gray-900'}`}>{risk.score}%</span>
                 </div>
 
                 {/* Metrics behind the rating */}
-                <div className={`rounded-xl p-3 space-y-1.5 mb-3 ${dm ? 'bg-gray-800/60' : 'bg-gray-50'}`}>
+                <div className={`rounded-xl p-3 space-y-1.5 mb-3 border ${dm ? 'bg-gray-800/60 border-gray-700/60' : 'bg-slate-50 border-gray-200/80'}`}>
                   {risk.metrics.map((m, k) => (
                     <MetricRow key={k} label={m.label} value={m.value} target={m.target} status={m.status} dm={dm} mutedCls={mutedCls} />
                   ))}
@@ -478,6 +817,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                 })()}
               </div>
             ))}
+            </div>
           </div>
         )}
       </div>
@@ -517,6 +857,10 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
 
     return (
       <div className="space-y-5">
+        {mlResult && mlResult.risks.length > 0 && (
+          <HealthSymbolLegend dm={dm} mutedCls={mutedCls} />
+        )}
+
         {/* All risk recs */}
         {mlResult && mlResult.risks.map((risk, i) => (
           <div key={i} className={`rounded-2xl shadow-sm border p-5 ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
@@ -545,7 +889,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                   <MetricRow key={k} label={m.label} value={m.value} target={m.target} status={m.status} dm={dm} mutedCls={mutedCls} />
                 ))}
               </div>
-              <h4 className={`text-xs font-bold uppercase tracking-widest mb-2 ${dm ? 'text-gray-500' : 'text-gray-400'}`}>
+              <h4 className={`text-xs font-bold uppercase tracking-widest mb-2 ${dm ? 'text-gray-400' : 'text-gray-600'}`}>
                 Doctor-Approved Recommendations
               </h4>
               {(() => {
@@ -579,7 +923,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         {/* Macro targets */}
         {recentLogs.length > 0 && card(
           <MacroCompare
-            label="Macros vs Your Targets (last 7 days)"
+            label="Nutrition vs. Daily Targets (last 7 days)"
             actual={{
               calories: Math.round(avg(recentLogs.map(l => l.calories || 0))),
               protein: Math.round(avg(recentLogs.map(l => l.protein || 0))),
@@ -595,7 +939,10 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         {/* Risk trend lines */}
         {snaps.length >= 2 && card(
           <>
-            <h3 className={`font-semibold mb-4 ${dm ? 'text-white' : 'text-gray-800'}`}>Risk Trends Over Time</h3>
+            <h3 className={`font-semibold mb-1 ${dm ? 'text-white' : 'text-gray-800'}`}>Risk Trends Over Time</h3>
+            <p className={`text-xs mb-4 ${mutedCls}`}>
+              Compares your four health risk areas across recent logged days (lower percentages mean lower health risk).
+            </p>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={snaps}>
                 <CartesianGrid strokeDasharray="3 3" stroke={dm ? '#1f2937' : '#f3f4f6'} />
@@ -616,7 +963,10 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         {/* Weekly activity */}
         {recentLogs.length > 0 && card(
           <>
-            <h3 className={`font-semibold mb-4 ${dm ? 'text-white' : 'text-gray-800'}`}>Weekly Activity Summary</h3>
+            <h3 className={`font-semibold mb-1 ${dm ? 'text-white' : 'text-gray-800'}`}>Weekly Activity Summary</h3>
+            <p className={`text-xs mb-4 ${mutedCls}`}>
+              Your daily sleep hours, exercise minutes, and water intake over your last 7 logged days.
+            </p>
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={recentLogs}>
                 <CartesianGrid strokeDasharray="3 3" stroke={dm ? '#1f2937' : '#f3f4f6'} />
@@ -633,10 +983,13 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
           </>
         )}
 
-        {/* Nutrition macros bar chart */}
+        {/* Nutrition overview bar chart */}
         {recentLogs.length > 0 && card(
           <>
-            <h3 className={`font-semibold mb-4 ${dm ? 'text-white' : 'text-gray-800'}`}>Weekly Nutrition Overview</h3>
+            <h3 className={`font-semibold mb-1 ${dm ? 'text-white' : 'text-gray-800'}`}>Weekly Nutrition Overview</h3>
+            <p className={`text-xs mb-4 ${mutedCls}`}>
+              Daily protein, carbohydrate, and fat totals (in grams) across your last 7 logged days.
+            </p>
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={recentLogs}>
                 <CartesianGrid strokeDasharray="3 3" stroke={dm ? '#1f2937' : '#f3f4f6'} />
@@ -654,13 +1007,15 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         )}
 
         {/* Advanced Details */}
-        <div className={`rounded-2xl shadow-sm border overflow-hidden ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
+        <div className={`rounded-2xl border overflow-hidden ${
+          dm ? 'bg-gray-900 border-gray-800 shadow-sm' : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+        }`}>
           <button
             onClick={() => setInsightsAdvancedOpen(!insightsAdvancedOpen)}
             className="w-full flex items-center justify-between p-4 text-left"
           >
-            <span className={`font-semibold text-sm ${dm ? 'text-gray-300' : 'text-gray-600'}`}>
-              Advanced Details (Programmers Only)
+            <span className={`font-semibold text-sm ${dm ? 'text-gray-300' : 'text-gray-700'}`}>
+              System Performance Details (Optional)
             </span>
             <ChevronDown className={`w-4 h-4 transition-transform ${insightsAdvancedOpen ? 'rotate-180' : ''} ${dm ? 'text-gray-400' : 'text-gray-500'}`} />
           </button>
@@ -672,7 +1027,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                     <Sparkles className="w-5 h-5 text-green-600" />
                   </div>
                   <div>
-                    <h2 className={`text-lg font-bold ${dm ? 'text-white' : 'text-gray-800'}`}>ML Insights</h2>
+                    <h2 className={`text-lg font-bold ${dm ? 'text-white' : 'text-gray-800'}`}>Assessment Confidence</h2>
                     <p className={mutedCls}>
                       {logs.length < 3
                         ? `Log ${3 - logs.length} more day${3 - logs.length !== 1 ? 's' : ''} to unlock full insights.`
@@ -680,7 +1035,7 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                     </p>
                     {mlResult?.trainedOn && (
                       <p className={`text-xs mt-1 ${dm ? 'text-green-400' : 'text-green-600'}`}>
-                        Trained model: {mlResult.trainedOn}
+                        Last calibrated: {mlResult.trainedOn}
                       </p>
                     )}
                   </div>
@@ -722,9 +1077,21 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
   const renderHistory = () => (
     <div className="space-y-5">
       {card(
-        <div>
-          <h2 className={`text-lg font-bold mb-1 ${dm ? 'text-white' : 'text-gray-800'}`}>Full Log History</h2>
-          <p className={mutedCls}>{logs.length} entries recorded since account creation</p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className={`text-lg font-bold mb-1 ${dm ? 'text-white' : 'text-gray-800'}`}>Full Log History</h2>
+            <p className={mutedCls}>{logs.length} entries recorded since account creation</p>
+          </div>
+          <div className="flex items-center gap-4 text-xs">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+              <span className={mutedCls}>Daily goal met</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-orange-400" />
+              <span className={mutedCls}>Below goal / high caffeine</span>
+            </span>
+          </div>
         </div>
       )}
 
@@ -736,29 +1103,33 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
       ) : (
         <div className="space-y-3">
           {[...logs].reverse().map((log, i) => (
-            <div key={i} className={`rounded-2xl border p-4 ${dm ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
+            <div key={i} className={`rounded-2xl border p-4 ${
+              dm
+                ? 'bg-gray-900 border-gray-800 shadow-sm'
+                : 'bg-white border-gray-200 shadow-[0_2px_10px_rgba(15,23,42,0.06)]'
+            }`}>
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div className="flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-green-500" />
-                  <span className={`font-semibold text-sm ${dm ? 'text-white' : 'text-gray-800'}`}>
+                  <Calendar className="w-4 h-4 accent-text" />
+                  <span className={`font-semibold text-sm ${dm ? 'text-white' : 'text-gray-900'}`}>
                     {format(parseISO(log.date), 'EEEE, MMMM d, yyyy')}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
                   {log.calories > 0 && (
-                    <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-orange-100 text-orange-700">
+                    <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-orange-100 text-orange-800">
                       {log.calories} kcal
                     </span>
                   )}
                   {log.foodQuality && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${dm ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
-                      {log.foodQuality.replace('_', ' ')}
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${dm ? 'bg-gray-800 text-gray-300' : 'bg-slate-100 text-gray-700 border border-gray-200'}`}>
+                      {foodQualityLabel(log.foodQuality)}
                     </span>
                   )}
                   <button
                     type="button"
                     onClick={() => { setLogDate(log.date); setView('dailyLog'); }}
-                    className="text-xs font-medium px-2.5 py-1 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
+                    className="text-xs font-medium px-2.5 py-1 rounded-lg accent-bg transition-colors"
                   >
                     Edit
                   </button>
@@ -810,11 +1181,11 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
                 </div>
               )}
 
-            {log.meals && log.meals.length > 0 && (
+              {log.meals && log.meals.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 pt-2 border-t mt-2 ${dm ? 'border-gray-800' : 'border-gray-100'}`}>
-                  {log.meals.map((m) => (
-                    <span key={m.name} className={`text-xs px-2 py-0.5 rounded-full ${dm ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
-                      {m.name} ×{m.qty}
+                  {log.meals.map((m, idx) => (
+                    <span key={`${m.name}-${idx}`} className={`text-xs px-2 py-0.5 rounded-full ${dm ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
+                      {m.name} · {formatServingBreakdown(m)}
                     </span>
                   ))}
                 </div>
@@ -827,278 +1198,50 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
     </div>
   );
 
-  // ── Profile ───────────────────────────────────────────────────────────────
-  const renderProfile = () => {
-    if (!profile) return null;
-    const set = (k: keyof UserProfile, v: string | number | string[]) =>
-      setProfile(p => p ? ({ ...p, [k]: v } as UserProfile) : p);
-
-    const CONDITIONS = [
-      { id: 'diabetes',       label: 'Diabetes' },
-      { id: 'hypertension',   label: 'Hypertension' },
-      { id: 'heart_disease',  label: 'Heart Disease' },
-      { id: 'asthma',         label: 'Asthma' },
-      { id: 'sleep_apnea',    label: 'Sleep Apnea' },
-      { id: 'hypothyroidism', label: 'Hypothyroidism' },
-      { id: 'obesity',        label: 'Obesity' },
-    ];
-
-    const toggleCond = (id: string) => {
-      const curr = profile.medicalConditions || [];
-      set('medicalConditions', curr.includes(id) ? curr.filter(c => c !== id) : [...curr, id]);
-    };
-
-    return (
-      <div className="max-w-xl mx-auto space-y-5">
-        {/* Account info */}
-        {card(
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-green-400 to-emerald-600 flex items-center justify-center text-white text-xl font-bold flex-shrink-0">
-              {user?.name?.charAt(0).toUpperCase()}
-            </div>
-            <div className="flex-1">
-              <h2 className={`text-lg font-bold ${dm ? 'text-white' : 'text-gray-800'}`}>{user?.name}</h2>
-              <p className={mutedCls}>{user?.email}</p>
-              <p className={`text-xs ${mutedCls}`}>
-                Member since {user?.createdAt ? format(parseISO(user.createdAt), 'MMMM d, yyyy') : '—'}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Data isolation */}
-        {card(
-          <div className="flex items-center gap-3">
-            <Shield className="w-5 h-5 text-green-500 flex-shrink-0" />
-            <div>
-              <p className={`text-sm font-semibold ${dm ? 'text-white' : 'text-gray-800'}`}>Data Isolation Active</p>
-              <p className={`text-xs ${mutedCls}`}>
-                Your health data is completely isolated to your account. {logs.length} logs · {snapshots.length} ML snapshots stored.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Health Profile */}
-        {card(
-          <>
-            <h3 className={`font-bold mb-4 ${dm ? 'text-white' : 'text-gray-800'}`}>Health Profile</h3>
-            <div className="space-y-5">
-              {/* Basic */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>Age</label>
-                  <input type="number" value={profile.age || ''} min={1} max={120}
-                    onChange={e => set('age', parseInt(e.target.value) || 0)}
-                    className={inputCls} placeholder="e.g. 28" />
-                </div>
-                <div>
-                  <label className={labelCls}>Biological Sex</label>
-                  <select value={profile.gender} onChange={e => set('gender', e.target.value)} className={inputCls}>
-                    <option value="">Select</option>
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                    <option value="other">Other / Prefer not to say</option>
-                  </select>
-                </div>
-                <div>
-                  <label className={labelCls}>Height (cm)</label>
-                  <input type="number" value={profile.height || ''} min={50} max={300}
-                    onChange={e => set('height', parseInt(e.target.value) || 0)}
-                    className={inputCls} placeholder="e.g. 170" />
-                </div>
-                <div>
-                  <label className={labelCls}>Weight (kg)</label>
-                  <input type="number" value={profile.weight || ''} min={20} max={500}
-                    onChange={e => set('weight', parseFloat(e.target.value) || 0)}
-                    className={inputCls} placeholder="e.g. 70" />
-                </div>
-              </div>
-
-              {profile.height > 0 && profile.weight > 0 && (
-                <div className={`p-3 rounded-xl ${dm ? 'bg-gray-800' : 'bg-green-50'}`}>
-                  <p className={`text-sm ${dm ? 'text-gray-300' : 'text-gray-700'}`}>
-                    BMI: <span className="font-bold text-green-600">{bmi}</span>
-                    <span className={`ml-2 text-xs ${mutedCls}`}>(Normal: 18.5–24.9)</span>
-                  </p>
-                </div>
-              )}
-
-              {/* Activity Level */}
-              <div>
-                <label className={labelCls}>Activity Level</label>
-                <select value={profile.activityLevel} onChange={e => set('activityLevel', e.target.value)} className={inputCls}>
-                  <option value="sedentary">Sedentary (little/no exercise)</option>
-                  <option value="light">Lightly Active (1–3 days/week)</option>
-                  <option value="moderate">Moderately Active (3–5 days/week)</option>
-                  <option value="active">Very Active (6–7 days/week)</option>
-                  <option value="very_active">Extremely Active (physical job / 2×/day)</option>
-                </select>
-              </div>
-
-              {/* Weight goal */}
-              <div>
-                <label className={labelCls}>Weight Goal</label>
-                <div className="flex flex-wrap gap-2">
-                  {([
-                    { id: 'lose',     label: '🔻 Lose weight' },
-                    { id: 'maintain', label: '➖ Maintain weight' },
-                    { id: 'gain',     label: '🔺 Gain weight / muscle' },
-                  ] as { id: 'lose' | 'maintain' | 'gain'; label: string }[]).map(o => {
-                    const active = (profile.goal || 'maintain') === o.id;
-                    return (
-                      <button
-                        key={o.id}
-                        type="button"
-                        onClick={() => set('goal', o.id)}
-                        className={`px-3.5 py-2 rounded-xl text-sm font-medium border transition-all ${
-                          active
-                            ? 'bg-green-600 text-white border-green-600'
-                            : dm
-                            ? 'bg-gray-800 border-gray-700 text-gray-300 hover:border-green-500'
-                            : 'bg-white border-gray-200 text-gray-600 hover:border-green-400'
-                        }`}
-                      >
-                        {o.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className={`text-xs mt-1.5 ${mutedCls}`}>
-                  Adjusted with your activity level to set calorie and macro targets.
-                </p>
-              </div>
-
-              {/* Lifestyle */}
-              <h4 className={`font-semibold text-sm pt-1 ${dm ? 'text-gray-200' : 'text-gray-700'}`}>Lifestyle Habits</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>Smoking</label>
-                  <select value={profile.smoking} onChange={e => set('smoking', e.target.value)} className={inputCls}>
-                    <option value="never">Never smoked</option>
-                    <option value="former">Former smoker</option>
-                    <option value="current">Currently smoke</option>
-                  </select>
-                </div>
-                <div>
-                  <label className={labelCls}>Alcohol</label>
-                  <select value={profile.alcohol} onChange={e => set('alcohol', e.target.value)} className={inputCls}>
-                    <option value="never">Never</option>
-                    <option value="rarely">Rarely</option>
-                    <option value="moderately">Moderately</option>
-                    <option value="frequently">Frequently</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Diet */}
-              <h4 className={`font-semibold text-sm pt-1 ${dm ? 'text-gray-200' : 'text-gray-700'}`}>Dietary Preferences</h4>
-              <div>
-                <label className={labelCls}>Diet Type</label>
-                <select value={profile.dietType} onChange={e => set('dietType', e.target.value)} className={inputCls}>
-                  {['balanced','vegetarian','vegan','keto','paleo','mediterranean','unhealthy'].map(o => (
-                    <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                {([
-                  { label: 'Vegetables',      field: 'vegetableIntake' as keyof UserProfile },
-                  { label: 'Fruits',          field: 'fruitIntake'     as keyof UserProfile },
-                  { label: 'Processed Food',  field: 'processedFood'   as keyof UserProfile },
-                ] as { label: string; field: keyof UserProfile }[]).map(({ label, field }) => (
-                  <div key={String(field)}>
-                    <label className={labelCls}>{label}</label>
-                    <select value={String(profile[field])} onChange={e => set(field, e.target.value)} className={inputCls}>
-                      {['daily','often','sometimes','rarely'].map(o => (
-                        <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-
-              {/* Medical */}
-              <h4 className={`font-semibold text-sm pt-1 ${dm ? 'text-gray-200' : 'text-gray-700'}`}>Medical Conditions</h4>
-              <div className="grid grid-cols-2 gap-2">
-                {CONDITIONS.map(c => {
-                  const active = (profile.medicalConditions || []).includes(c.id);
-                  return (
-                    <button key={c.id} type="button" onClick={() => toggleCond(c.id)}
-                      className={`px-3 py-2.5 rounded-xl text-sm font-medium border text-left transition-all ${
-                        active
-                          ? 'bg-green-500 text-white border-green-500'
-                          : dm
-                          ? 'bg-gray-800 border-gray-700 text-gray-300 hover:border-green-500'
-                          : 'bg-white border-gray-200 text-gray-600 hover:border-green-400'
-                      }`}
-                    >
-                      {active && <CheckCircle className="w-3.5 h-3.5 inline mr-1.5 -mt-0.5" />}
-                      {c.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <button
-                onClick={saveProfile}
-                className={`w-full py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
-                  profileSaved
-                    ? 'bg-green-500 text-white'
-                    : 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-600 hover:to-emerald-700 shadow-lg shadow-green-200/40'
-                }`}
-              >
-                {profileSaved
-                  ? <><CheckCircle className="w-5 h-5" /> Profile Saved!</>
-                  : <><CheckCircle className="w-5 h-5" /> Save Profile</>
-                }
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  };
-
   // ── Layout ────────────────────────────────────────────────────────────────
   return (
-    <div className={`min-h-screen ${dm ? 'bg-gray-950' : 'bg-gray-50'}`}>
+    <div className={`min-h-screen ${dm ? 'bg-gray-950' : 'bg-slate-100/75'}`}>
       {/* Header */}
-      <header className={`sticky top-0 z-20 backdrop-blur-md border-b ${dm ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-100'}`}>
+      <header className={`sticky top-0 z-20 backdrop-blur-md border-b ${
+        dm ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-200 shadow-xs'
+      }`}>
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-1.5 bg-green-100 rounded-xl">
-              <Heart className="w-5 h-5 text-green-600" />
+          <button
+            type="button"
+            onClick={() => setView('dashboard')}
+            className="flex items-center gap-2.5 text-left"
+          >
+            <div className="p-1.5 rounded-xl accent-soft">
+              <Heart className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-base font-bold text-green-600">Med</span>
-              <span className={`text-base font-bold ${dm ? 'text-gray-400' : 'text-gray-400'}`}>Alert</span>
+              <span className="text-base font-bold accent-text">Med</span>
+              <span className={`text-base font-bold ${dm ? 'text-gray-300' : 'text-gray-800'}`}>Alert</span>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={toggleDark}
-              className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-yellow-400 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-              {dm ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
-            <button onClick={handleLogout}
-              className={`p-2 rounded-xl transition-colors ${dm ? 'bg-gray-800 text-red-400 hover:bg-gray-700' : 'bg-gray-100 text-red-500 hover:bg-red-50'}`}
-              title="Sign out">
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
+          </button>
+          <HeaderUserMenu
+            userName={user?.name}
+            userEmail={user?.email}
+            roleLabel="Patient"
+            accountActive={view === 'account'}
+            onOpenAccount={() => setView('account')}
+            onLogout={handleLogout}
+          />
         </div>
       </header>
 
       {/* Nav */}
-      <nav className={`sticky top-14 z-10 backdrop-blur-md border-b ${dm ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-100'}`}>
+      <nav className={`sticky top-14 z-10 backdrop-blur-md border-b ${
+        dm ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-200'
+      }`}>
         <div className="max-w-5xl mx-auto px-4">
           <div className="flex gap-0 overflow-x-auto">
             {navItems.map(({ id, label, icon: Icon }) => (
               <button key={id} onClick={() => setView(id)}
                 className={`flex items-center gap-1.5 px-4 py-3 border-b-2 text-sm font-medium transition-all whitespace-nowrap ${
                   view === id
-                    ? 'border-green-500 text-green-600'
-                    : `border-transparent ${dm ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-800'}`
+                    ? 'accent-tab-active font-semibold'
+                    : `border-transparent ${dm ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-900'}`
                 }`}>
                 <Icon className="w-4 h-4" />{label}
               </button>
@@ -1113,13 +1256,24 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
         {view === 'dailyLog'  && renderDailyLog()}
         {view === 'insights'  && renderInsights()}
         {view === 'history'   && renderHistory()}
-        {view === 'profile'   && renderProfile()}
+        {view === 'account'   && (
+          <AccountPage
+            onBack={() => setView('dashboard')}
+            backLabel="Back to Dashboard"
+            profile={profile}
+            setProfile={setProfile}
+            onSaveProfile={saveProfile}
+            profileSaved={profileSaved}
+            logsCount={logs.length}
+            snapshotsCount={snapshots.length}
+          />
+        )}
       </main>
 
       {/* Footer */}
-      <footer className={`border-t mt-10 py-5 ${dm ? 'border-gray-800' : 'border-gray-100'}`}>
+      <footer className={`border-t mt-10 py-5 ${dm ? 'border-gray-800' : 'border-gray-200 bg-white/60'}`}>
         <div className="max-w-5xl mx-auto px-4 text-center">
-          <p className={`text-xs ${dm ? 'text-gray-600' : 'text-gray-400'}`}>
+          <p className={`text-xs ${dm ? 'text-gray-500' : 'text-gray-600'}`}>
             This project is strictly for IT Capstone Project 1. Made by students from OUR LADY OF FATIMA UNIVERSITY.
           </p>
         </div>
@@ -1132,33 +1286,18 @@ function AppInner({ darkMode, toggleDark }: { darkMode: boolean; toggleDark: () 
 
 function AuthGate() {
   const { isAuthenticated, user } = useAuth();
-
-  const [darkMode, setDarkMode] = useState(() =>
-    localStorage.getItem('med_dark') === 'true' ||
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-  );
-
-  const toggleDark = () => {
-    setDarkMode(d => {
-      localStorage.setItem('med_dark', String(!d));
-      return !d;
-    });
-  };
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode);
-  }, [darkMode]);
+  const { darkMode, toggleDark } = useTheme();
 
   return (
     <ConfirmProvider darkMode={darkMode}>
       {!isAuthenticated ? (
         <AuthPage darkMode={darkMode} toggleDark={toggleDark} />
       ) : user?.role === 'doctor' ? (
-        <DoctorDashboard darkMode={darkMode} toggleDark={toggleDark} />
+        <DoctorDashboard />
       ) : !user?.profileComplete ? (
         <OnboardingPage darkMode={darkMode} />
       ) : (
-        <AppInner darkMode={darkMode} toggleDark={toggleDark} />
+        <AppInner />
       )}
     </ConfirmProvider>
   );
@@ -1168,8 +1307,10 @@ function AuthGate() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AuthGate />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

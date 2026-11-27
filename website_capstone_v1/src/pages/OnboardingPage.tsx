@@ -27,7 +27,6 @@ const CONDITIONS = [
   { id: 'asthma',         label: 'Asthma' },
   { id: 'sleep_apnea',    label: 'Sleep Apnea' },
   { id: 'hypothyroidism', label: 'Hypothyroidism' },
-  { id: 'obesity',        label: 'Obesity' },
   { id: 'none',           label: 'None of the above' },
 ];
 
@@ -125,9 +124,9 @@ export default function OnboardingPage({ darkMode }: Props) {
       medicalConditions: conditions.filter(c => c !== 'none'),
     };
 
-    profiles.save(profile);
-    await new Promise(r => setTimeout(r, 800)); // brief visual delay
-    completeProfile();
+    await profiles.saveAsync(profile);
+    await new Promise(r => setTimeout(r, 400)); // brief visual delay
+    await completeProfile();
     setSaving(false);
   }
 
@@ -187,7 +186,7 @@ export default function OnboardingPage({ darkMode }: Props) {
                 ))}
               </div>
               <p className={`text-xs mt-2 ${mutedCls}`}>
-                Used only for BMR/calorie target calculations. Never shared.
+                Used only to personalize your daily calorie target. Never shared.
               </p>
             </div>
           </div>
@@ -296,7 +295,7 @@ export default function OnboardingPage({ darkMode }: Props) {
             <div>
               <label className={labelCls}>Diet Type</label>
               <div className="flex flex-wrap gap-2">
-                {['balanced','vegetarian','vegan','keto','paleo','mediterranean','unhealthy'].map(d => (
+                {['balanced', 'vegan', 'unspecified'].map(d => (
                   <Pill key={d} value={d} current={dietType} onChange={setDietType}>
                     {d.charAt(0).toUpperCase() + d.slice(1)}
                   </Pill>
@@ -377,7 +376,7 @@ export default function OnboardingPage({ darkMode }: Props) {
         return (
           <div className="space-y-4">
             <p className={mutedCls}>
-              Select any pre-existing conditions (select all that apply). This helps MedAlert calibrate risk predictions accurately.
+              Select any pre-existing conditions (select all that apply). This helps MedAlert tailor your health guidance.
             </p>
             <div className="grid grid-cols-2 gap-2">
               {CONDITIONS.map(c => {
@@ -526,8 +525,8 @@ export default function OnboardingPage({ darkMode }: Props) {
           </div>
         </div>
 
-        <p className={`text-center text-xs mt-4 ${dm ? 'text-gray-600' : 'text-gray-400'}`}>
-          You can update any of this information at any time from your Profile page.
+        <p className={`text-center text-xs mt-4 ${dm ? 'text-gray-500' : 'text-gray-600'}`}>
+          You can update any of this information at any time from your Account &amp; Settings page.
         </p>
       </div>
     </div>

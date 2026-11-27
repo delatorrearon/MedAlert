@@ -1,12 +1,25 @@
 import { Dispatch, SetStateAction, useState } from 'react';
 import {
   Clock, Dumbbell, Droplets, Coffee, Scale, Flame, Beef, Wheat, Apple,
-  CheckCircle, AlertCircle, Calendar, ChevronLeft, ChevronRight, Search, Plus, Trash2, Minus,
+  CheckCircle, AlertCircle, AlertTriangle, Calendar, ChevronLeft, ChevronRight, Search, Plus, Trash2, Minus,
 } from 'lucide-react';
 import { format, parseISO, subDays } from 'date-fns';
-import { DailyLog, FoodQuality, MealEntry, UserProfile } from '../db/database';
+import { DailyLog, MealEntry, UserProfile } from '../db/database';
 import { estimateMacrosFromCalories } from '../utils/mlEngine';
-import { FoodItem, macroTargetsForProfile, mealTotals, searchFoods } from '../utils/foodEngine';
+import {
+  FoodItem,
+  amountToQty,
+  classifyMealQuality,
+  foodQualityLabel,
+  formatServingBreakdown,
+  getDefaultFoodUnit,
+  getFoodUnits,
+  macroTargetsForProfile,
+  mealTotals,
+  parseAmountInput,
+  qtyToAmount,
+  searchFoods,
+} from '../utils/foodEngine';
 import { useConfirm } from '../context/ConfirmContext';
 import MacroCompare from './MacroCompare';
 
@@ -26,7 +39,7 @@ export interface DailyLogFormProps {
   inputCls: string;
 }
 
-const TODAY = new Date().toISOString().split('T')[0];
+const getTodayStr = () => format(new Date(), 'yyyy-MM-dd');
 
 function defaultCalories(profile: UserProfile | null): number {
   const map: Record<string, number> = {
@@ -91,7 +104,7 @@ function ChipRow({
       <label className={labelCls}>
         <Icon className="w-4 h-4 inline mr-1.5 -mt-0.5" />
         {label}
-        {unit && <span className={`ml-1 text-xs font-normal ${dm ? 'text-gray-500' : 'text-gray-400'}`}>({unit})</span>}
+        {unit && <span className={`ml-1 text-xs font-normal ${dm ? 'text-gray-400' : 'text-gray-600'}`}>({unit})</span>}
       </label>
       <div className="flex flex-wrap gap-2 mt-2">
         {chips.map((c) => {
@@ -101,12 +114,12 @@ function ChipRow({
               key={String(c.value)}
               type="button"
               onClick={() => onSelect(c.value)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
                 active
-                  ? 'bg-green-600 text-white shadow-sm'
+                  ? 'accent-bg accent-border shadow-xs'
                   : dm
-                    ? 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                    : 'bg-slate-50 border-gray-200 text-gray-800 hover:bg-white hover:border-gray-300'
               }`}
             >
               {c.label}
@@ -193,6 +206,7 @@ export default function DailyLogForm({
   mutedCls,
   inputCls,
 }: DailyLogFormProps) {
+  const TODAY = getTodayStr();
   const set = (k: keyof DailyLog, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
 
   const missedDates = getMissedLogDates(logs);
@@ -209,10 +223,32 @@ export default function DailyLogForm({
   // Food picker state
   const [foodQuery, setFoodQuery] = useState('');
   const [foodResults, setFoodResults] = useState<FoodItem[]>([]);
+  const [amountDrafts, setAmountDrafts] = useState<Record<number, string>>({});
 
   const macroTargets = macroTargetsForProfile(profile);
+  const hasLoggedFoods = meals.length > 0;
+  const calculatedFromFoods = hasLoggedFoods ? mealTotals(meals) : null;
+  const autoMealQuality = classifyMealQuality(meals, profile);
+  const currentCalories = calculatedFromFoods ? calculatedFromFoods.calories : (form.calories ?? 0);
+  const calorieOverage = currentCalories - macroTargets.calories;
+  const isOverCalories = currentCalories > 0 && calorieOverage > 0;
+  const isHighCalorieOverage = currentCalories > macroTargets.calories * 1.15;
 
   const applyMealTotals = (next: MealEntry[]) => {
+    const derivedQuality = classifyMealQuality(next, profile);
+    set('foodQuality', derivedQuality);
+    if (next.length === 0) {
+      const fallbackCals = defaultCalories(profile);
+      const fallbackMacros = estimateMacrosFromCalories(fallbackCals);
+      set('meals', []);
+      set('calories', fallbackCals);
+      set('protein', fallbackMacros.protein);
+      set('carbs', fallbackMacros.carbs);
+      set('fats', fallbackMacros.fats);
+      set('trackMacros', false);
+      setAmountDrafts({});
+      return;
+    }
     const t = mealTotals(next);
     set('meals', next);
     set('calories', t.calories);
@@ -223,14 +259,22 @@ export default function DailyLogForm({
   };
 
   const addMeal = (food: FoodItem) => {
-    applyMealTotals([...meals, { ...food, qty: 1 }]);
+    const defaultUnit = getDefaultFoodUnit(food);
+    const defaultAmount = defaultUnit.id === 'g' || defaultUnit.id === 'ml'
+      ? Math.round(1 / defaultUnit.qtyPerUnit)
+      : 1;
+    const qty = amountToQty(defaultAmount, defaultUnit);
+    applyMealTotals([...meals, { ...food, qty, unit: defaultUnit.id }]);
     setFoodQuery('');
     setFoodResults([]);
   };
 
   const { confirm } = useConfirm();
 
-  const removeMeal = (i: number) => applyMealTotals(meals.filter((_, idx) => idx !== i));
+  const removeMeal = (i: number) => {
+    setAmountDrafts({});
+    applyMealTotals(meals.filter((_, idx) => idx !== i));
+  };
 
   const handleRemoveMeal = async (i: number) => {
     const meal = meals[i];
@@ -247,8 +291,37 @@ export default function DailyLogForm({
     }
   };
 
-  const changeQty = (i: number, qty: number) =>
-    applyMealTotals(meals.map((m, idx) => (idx === i ? { ...m, qty: Math.max(0.5, qty) } : m)));
+  const updateMealAmount = (i: number, amount: number, unitId?: string) => {
+    const meal = meals[i];
+    if (!meal) return;
+    const units = getFoodUnits(meal);
+    const targetUnit = units.find((u) => u.id === (unitId ?? meal.unit)) ?? units[0];
+    const clampedAmount = Math.max(targetUnit.min, amount);
+    const nextQty = amountToQty(clampedAmount, targetUnit);
+    setAmountDrafts((prev) => {
+      const next = { ...prev };
+      delete next[i];
+      return next;
+    });
+    applyMealTotals(
+      meals.map((m, idx) => (idx === i ? { ...m, qty: nextQty, unit: targetUnit.id } : m))
+    );
+  };
+
+  const changeMealUnit = (i: number, newUnitId: string) => {
+    const meal = meals[i];
+    if (!meal) return;
+    const units = getFoodUnits(meal);
+    const newUnit = units.find((u) => u.id === newUnitId) ?? units[0];
+    setAmountDrafts((prev) => {
+      const next = { ...prev };
+      delete next[i];
+      return next;
+    });
+    applyMealTotals(
+      meals.map((m, idx) => (idx === i ? { ...m, unit: newUnit.id } : m))
+    );
+  };
 
   const onSearch = (q: string) => {
     setFoodQuery(q);
@@ -262,17 +335,10 @@ export default function DailyLogForm({
     if (next <= TODAY) setLogDate(next);
   };
 
-  const foodQualityChips: { label: string; value: FoodQuality }[] = [
-    { label: 'Mostly healthy', value: 'healthy' },
-    { label: 'Balanced', value: 'balanced' },
-    { label: 'Mixed', value: 'mixed' },
-    { label: 'Mostly processed', value: 'processed' },
-  ];
-
   return (
     <>
       {/* Date picker */}
-      <div className={`p-4 rounded-xl mb-5 ${dm ? 'bg-gray-800' : 'bg-gray-50'}`}>
+      <div className={`p-4 rounded-xl border mb-5 ${dm ? 'bg-gray-800 border-gray-700' : 'bg-slate-50 border-gray-200'}`}>
         <label className={labelCls}>
           <Calendar className="w-4 h-4 inline mr-1.5 -mt-0.5" />
           Log date
@@ -309,8 +375,8 @@ export default function DailyLogForm({
           <button
             type="button"
             onClick={() => setLogDate(TODAY)}
-            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-              logDate === TODAY ? 'bg-green-600 text-white' : dm ? 'bg-gray-700 text-gray-300' : 'bg-white border text-gray-600'
+            className={`text-xs px-2.5 py-1 rounded-full font-medium border ${
+              logDate === TODAY ? 'accent-bg accent-border' : dm ? 'bg-gray-700 border-gray-600 text-gray-200' : 'bg-white border-gray-300 text-gray-700'
             }`}
           >
             Today
@@ -318,8 +384,8 @@ export default function DailyLogForm({
           <button
             type="button"
             onClick={() => setLogDate(format(subDays(new Date(), 1), 'yyyy-MM-dd'))}
-            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-              dm ? 'bg-gray-700 text-gray-300' : 'bg-white border text-gray-600'
+            className={`text-xs px-2.5 py-1 rounded-full font-medium border ${
+              dm ? 'bg-gray-700 border-gray-600 text-gray-200' : 'bg-white border-gray-300 text-gray-700'
             }`}
           >
             Yesterday
@@ -365,13 +431,13 @@ export default function DailyLogForm({
           }`}
         >
           <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-          <p>Your first log starts ML predictions. Quick taps below — no need to track every macro.</p>
+          <p>Log your first day below to start seeing your personalized health scores and insights — quick taps are all you need.</p>
         </div>
       )}
 
       <div className="space-y-6">
         <div>
-          <h3 className={`text-xs font-bold uppercase tracking-widest mb-4 ${dm ? 'text-gray-500' : 'text-gray-400'}`}>
+          <h3 className={`text-xs font-bold uppercase tracking-widest mb-4 ${dm ? 'text-gray-400' : 'text-gray-600'}`}>
             Physical
           </h3>
           <div className="space-y-5">
@@ -465,7 +531,7 @@ export default function DailyLogForm({
                 }}
                 className="rounded accent-green-600"
               />
-              Log body weight today (optional, improves BMI accuracy)
+              Log today&apos;s weight (optional)
             </label>
             {logWeight && (
               <NumberInput label="Weight" icon={Scale} min={20} max={300} step={0.1} unit="kg"
@@ -477,19 +543,19 @@ export default function DailyLogForm({
         </div>
 
         <div>
-          <h3 className={`text-xs font-bold uppercase tracking-widest mb-1 ${dm ? 'text-gray-500' : 'text-gray-400'}`}>
+          <h3 className={`text-xs font-bold uppercase tracking-widest mb-1 ${dm ? 'text-gray-400' : 'text-gray-600'}`}>
             Nutrition
           </h3>
-          <p className={`text-xs mb-4 ${mutedCls}`}>Calories and eating quality are enough for most people.</p>
+          <p className={`text-xs mb-4 ${mutedCls}`}>Add your foods below to calculate calories, nutrition, and meal quality automatically.</p>
 
           <div className="space-y-5">
             <div>
               <label className={labelCls}>
                 <Apple className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-                What did you eat today? (Food database)
+                What did you eat today?
               </label>
               <div className="relative mt-2">
-                <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${dm ? 'text-gray-500' : 'text-gray-400'}`} />
+                <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${dm ? 'text-gray-400' : 'text-gray-600'}`} />
                 <input
                   type="text"
                   value={foodQuery}
@@ -521,106 +587,258 @@ export default function DailyLogForm({
               </div>
 
               {meals.length > 0 && (
-                <div className="space-y-2 mt-3">
-                  {meals.map((m, i) => (
-                    <div key={i} className={`flex items-center justify-between gap-3 rounded-xl border p-2.5 ${
-                      dm ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'
-                    }`}>
-                      <div className="min-w-0">
-                        <p className={`text-sm font-medium truncate ${dm ? 'text-white' : 'text-gray-800'}`}>{m.name}</p>
-                        <p className={`text-xs ${mutedCls}`}>
-                          {m.serving} · {m.protein}g P · {m.carbs}g C · {m.fats}g F
-                        </p>
+                <div className="space-y-2.5 mt-3">
+                  {meals.map((m, i) => {
+                    const units = getFoodUnits(m);
+                    const activeUnit = units.find((u) => u.id === m.unit) ?? units[0];
+                    const displayAmount = qtyToAmount(m.qty, activeUnit);
+                    const draftValue = amountDrafts[i] !== undefined ? amountDrafts[i] : String(displayAmount);
+                    const showFractions = activeUnit.id !== 'g' && activeUnit.id !== 'ml';
+
+                    return (
+                      <div key={i} className={`rounded-xl border p-3 space-y-2.5 ${
+                        dm ? 'bg-gray-800 border-gray-700' : 'bg-slate-50 border-gray-200'
+                      }`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={`text-sm font-semibold truncate ${dm ? 'text-white' : 'text-gray-800'}`}>{m.name}</p>
+                            <p className={`text-xs mt-0.5 ${mutedCls}`}>
+                              <span className={`font-medium ${dm ? 'text-gray-200' : 'text-gray-700'}`}>{formatServingBreakdown(m)}</span>
+                              {' · '}
+                              <span className={`font-semibold ${dm ? 'text-orange-300' : 'text-orange-600'}`}>{Math.round(m.calories * m.qty)} kcal</span>
+                              {' · '}
+                              {Math.round(m.protein * m.qty)}g P · {Math.round(m.carbs * m.qty)}g C · {Math.round(m.fats * m.qty)}g F
+                            </p>
+                          </div>
+                          <button type="button" onClick={() => handleRemoveMeal(i)}
+                            className={`p-1.5 rounded-lg text-red-500 transition-colors flex-shrink-0 ${dm ? 'hover:bg-red-950/40' : 'hover:bg-red-50'}`}
+                            aria-label="Remove food">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          {/* Direct amount + unit measurement controls */}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => updateMealAmount(i, displayAmount - activeUnit.step, activeUnit.id)}
+                              className={`p-1.5 rounded-lg ${dm ? 'bg-gray-700 hover:bg-gray-600 text-gray-200' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
+                              aria-label="Decrease amount"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={draftValue}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setAmountDrafts((prev) => ({ ...prev, [i]: raw }));
+                                const parsed = parseAmountInput(raw);
+                                if (parsed !== null) {
+                                  const nextQty = amountToQty(Math.max(activeUnit.min, parsed), activeUnit);
+                                  applyMealTotals(
+                                    meals.map((item, idx) => (idx === i ? { ...item, qty: nextQty, unit: activeUnit.id } : item))
+                                  );
+                                }
+                              }}
+                              onBlur={() => {
+                                const parsed = parseAmountInput(draftValue);
+                                if (parsed !== null) {
+                                  updateMealAmount(i, parsed, activeUnit.id);
+                                } else {
+                                  setAmountDrafts((prev) => {
+                                    const next = { ...prev };
+                                    delete next[i];
+                                    return next;
+                                  });
+                                }
+                              }}
+                              aria-label="Food amount"
+                              title="Enter decimals (e.g. 1.5) or fractions (e.g. 1/2 or 1 1/2)"
+                              className={`w-16 px-2 py-1 text-center text-sm font-semibold rounded-lg border focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                                dm ? 'bg-gray-900 border-gray-600 text-white' : 'bg-gray-50 border-gray-200 text-gray-800'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => updateMealAmount(i, displayAmount + activeUnit.step, activeUnit.id)}
+                              className={`p-1.5 rounded-lg ${dm ? 'bg-gray-700 hover:bg-gray-600 text-gray-200' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
+                              aria-label="Increase amount"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                            <select
+                              value={activeUnit.id}
+                              onChange={(e) => changeMealUnit(i, e.target.value)}
+                              aria-label="Measurement unit"
+                              className={`px-2.5 py-1 text-xs font-medium rounded-lg border focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                                dm ? 'bg-gray-900 border-gray-600 text-gray-200' : 'bg-gray-50 border-gray-200 text-gray-700'
+                              }`}
+                            >
+                              {units.map((u) => (
+                                <option key={u.id} value={u.id}>
+                                  {u.pluralLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Quick common portion taps */}
+                          {showFractions && (
+                            <div className="flex items-center gap-1">
+                              {[
+                                { label: '½', val: 0.5 },
+                                { label: '1', val: 1 },
+                                { label: '1½', val: 1.5 },
+                                { label: '2', val: 2 },
+                              ].map((preset) => {
+                                const isActive = Math.abs(displayAmount - preset.val) < 0.01;
+                                return (
+                                  <button
+                                    key={preset.label}
+                                    type="button"
+                                    onClick={() => updateMealAmount(i, preset.val, activeUnit.id)}
+                                    className={`px-2 py-0.5 text-xs font-medium rounded-md transition-colors ${
+                                      isActive
+                                        ? 'bg-green-600 text-white'
+                                        : dm
+                                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                    }`}
+                                  >
+                                    {preset.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <button type="button" onClick={() => changeQty(i, m.qty - 0.5)}
-                          className={`p-1.5 rounded-lg ${dm ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'}`}
-                          aria-label="Decrease servings">
-                          <Minus className="w-3.5 h-3.5" />
-                        </button>
-                        <span className={`text-sm font-semibold w-6 text-center ${dm ? 'text-white' : 'text-gray-800'}`}>
-                          {m.qty}
-                        </span>
-                        <button type="button" onClick={() => changeQty(i, m.qty + 0.5)}
-                          className={`p-1.5 rounded-lg ${dm ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'}`}
-                          aria-label="Increase servings">
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                        <button type="button" onClick={() => handleRemoveMeal(i)}
-                          className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
-                          aria-label="Remove food">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
+                  <p className={`text-xs ${mutedCls}`}>
+                    Tip: You can switch units (e.g. cups, grams, slices) or type fractions like <code className="font-semibold">1/2</code> or <code className="font-semibold">1 1/2</code>.
+                  </p>
                 </div>
               )}
             </div>
 
-            <ChipRow
-              label="Estimated calories today"
-              icon={Flame}
-              value={form.calories}
-              onSelect={(v) => {
-                const cals = v as number;
-                set('calories', cals);
-                if (!trackMacros) {
-                  const m = estimateMacrosFromCalories(cals);
-                  set('protein', m.protein);
-                  set('carbs', m.carbs);
-                  set('fats', m.fats);
-                }
-              }}
-              chips={[
-                { label: '~1500', value: 1500 },
-                { label: '~1800', value: 1800 },
-                { label: '~2000', value: 2000 },
-                { label: '~2200', value: 2200 },
-                { label: '~2500', value: 2500 },
-              ]}
-              dm={dm}
-              labelCls={labelCls}
-            />
-            <NumberInput
-              label="Calories (exact)"
-              icon={Flame}
-              min={0}
-              max={10000}
-              unit="kcal"
-              placeholder={`e.g. ${defaultCalories(profile)}`}
-              value={form.calories}
-              onChange={(v) => set('calories', v)}
-              dm={dm}
-              labelCls={labelCls}
-              mutedCls={mutedCls}
-              inputCls={inputCls}
-            />
-
-            <div>
-              <label className={labelCls}>How did you eat today?</label>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {foodQualityChips.map((c) => {
-                  const active = form.foodQuality === c.value;
-                  return (
-                    <button
-                      key={c.value}
-                      type="button"
-                      onClick={() => set('foodQuality', c.value)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        active
-                          ? 'bg-green-600 text-white'
-                          : dm
-                            ? 'bg-gray-800 text-gray-300'
-                            : 'bg-gray-100 text-gray-700'
-                      }`}
-                    >
-                      {c.label}
-                    </button>
-                  );
-                })}
+            {hasLoggedFoods && calculatedFromFoods ? (
+              <div className={`rounded-xl border p-4 ${dm ? 'bg-gray-800/70 border-gray-700' : 'bg-green-50/70 border-green-200'}`}>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <span className={`flex items-center gap-1.5 text-sm font-semibold ${dm ? 'text-white' : 'text-gray-800'}`}>
+                    <Flame className="w-4 h-4 text-orange-500" />
+                    Calculated Calories
+                  </span>
+                  <span className={`text-lg font-bold ${
+                    isHighCalorieOverage
+                      ? 'text-red-500'
+                      : isOverCalories
+                        ? 'text-amber-500'
+                        : dm ? 'text-green-400' : 'text-green-700'
+                  }`}>
+                    {calculatedFromFoods.calories.toLocaleString()} kcal
+                    <span className={`text-xs font-normal ml-1 ${mutedCls}`}>/ {macroTargets.calories.toLocaleString()} kcal target</span>
+                  </span>
+                </div>
+                <div className={`h-2 w-full rounded-full overflow-hidden mb-2 ${dm ? 'bg-gray-700' : 'bg-white'}`}>
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      isHighCalorieOverage ? 'bg-red-500' : isOverCalories ? 'bg-amber-500' : 'bg-green-500'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.round((calculatedFromFoods.calories / Math.max(1, macroTargets.calories)) * 100))}%` }}
+                  />
+                </div>
+                <p className={`text-xs ${mutedCls}`}>
+                  Automatically calculated from the {meals.length} food item{meals.length !== 1 ? 's' : ''} you added above. Remove all foods if you want to enter calories manually.
+                </p>
+                <div className="flex items-center justify-between gap-2 mt-2.5 pt-2.5 border-t border-black/5 dark:border-white/10 text-xs">
+                  <span className={mutedCls}>Auto-detected meal quality:</span>
+                  <span className={`font-semibold px-2.5 py-0.5 rounded-full ${
+                    autoMealQuality === 'healthy'
+                      ? dm ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-700'
+                      : autoMealQuality === 'balanced'
+                        ? dm ? 'bg-emerald-900/40 text-emerald-300' : 'bg-emerald-100 text-emerald-700'
+                        : autoMealQuality === 'mixed'
+                          ? dm ? 'bg-amber-900/40 text-amber-300' : 'bg-amber-100 text-amber-700'
+                          : dm ? 'bg-orange-900/40 text-orange-300' : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {foodQualityLabel(autoMealQuality)}
+                  </span>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <ChipRow
+                  label="Daily calories"
+                  icon={Flame}
+                  value={form.calories}
+                  onSelect={(v) => {
+                    const cals = v as number;
+                    set('calories', cals);
+                    if (!trackMacros) {
+                      const m = estimateMacrosFromCalories(cals);
+                      set('protein', m.protein);
+                      set('carbs', m.carbs);
+                      set('fats', m.fats);
+                    }
+                  }}
+                  chips={[
+                    { label: '1,500', value: 1500 },
+                    { label: '1,800', value: 1800 },
+                    { label: '2,000', value: 2000 },
+                    { label: '2,200', value: 2200 },
+                    { label: '2,500', value: 2500 },
+                  ]}
+                  dm={dm}
+                  labelCls={labelCls}
+                />
+                <NumberInput
+                  label="Custom daily calories"
+                  icon={Flame}
+                  min={0}
+                  max={10000}
+                  unit="kcal"
+                  placeholder={`e.g. ${defaultCalories(profile)}`}
+                  value={form.calories}
+                  onChange={(v) => set('calories', v)}
+                  dm={dm}
+                  labelCls={labelCls}
+                  mutedCls={mutedCls}
+                  inputCls={inputCls}
+                />
+                <p className={`text-xs -mt-2 ${mutedCls}`}>
+                  Tip: Adding foods above automatically calculates your daily calories and nutrition totals.
+                </p>
+              </>
+            )}
+
+            {isOverCalories && (
+              <div
+                role="alert"
+                className={`p-3.5 rounded-xl border flex items-start gap-2.5 text-sm ${
+                  isHighCalorieOverage
+                    ? dm
+                      ? 'bg-red-950/40 border-red-800 text-red-200'
+                      : 'bg-red-50 border-red-200 text-red-800'
+                    : dm
+                      ? 'bg-amber-950/40 border-amber-800 text-amber-200'
+                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                }`}
+              >
+                <AlertTriangle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isHighCalorieOverage ? 'text-red-500' : 'text-amber-500'}`} />
+                <div>
+                  <p className="font-semibold">
+                    Recommended Daily Calories Exceeded
+                  </p>
+                  <p className="text-xs mt-0.5 opacity-90">
+                    Your logged intake ({currentCalories.toLocaleString()} kcal) is {calorieOverage.toLocaleString()} kcal above your recommended daily target of {macroTargets.calories.toLocaleString()} kcal.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <label className={`flex items-center gap-2 text-sm cursor-pointer ${dm ? 'text-gray-300' : 'text-gray-700'}`}>
               <input
@@ -638,7 +856,7 @@ export default function DailyLogForm({
                 }}
                 className="rounded accent-green-600"
               />
-              I track protein, carbs & fats (optional)
+              Enter protein, carbs & fats manually (optional)
             </label>
 
             {trackMacros && (
@@ -659,14 +877,14 @@ export default function DailyLogForm({
             )}
 
             {!trackMacros && (form.calories ?? 0) > 0 && (
-              <p className={`text-xs p-3 rounded-xl ${dm ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
-                Macros estimated from calories for ML analysis (~25% protein, ~50% carbs, ~25% fats).
+              <p className={`text-xs p-3 rounded-xl border ${dm ? 'bg-gray-800 border-gray-700 text-gray-300' : 'bg-slate-50 border-gray-200 text-gray-700'}`}>
+                Protein, carbs, and fats are automatically estimated from your calories (~25% protein, ~50% carbs, ~25% fats).
               </p>
             )}
 
-            <div className={`rounded-xl border p-4 ${dm ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-100'}`}>
+            <div className={`rounded-xl border p-4 ${dm ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200 shadow-xs'}`}>
               <MacroCompare
-                label="Auto macro comparison"
+                label="Daily Nutrition Balance"
                 actual={{
                   calories: form.calories ?? 0,
                   protein: form.protein ?? 0,
@@ -685,15 +903,11 @@ export default function DailyLogForm({
       <button
         type="button"
         onClick={onSave}
-        className={`mt-6 w-full py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
-          logSaved
-            ? 'bg-green-500 text-white'
-            : 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-600 hover:to-emerald-700 shadow-lg shadow-green-200/40'
-        }`}
+        className="mt-6 w-full py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all accent-gradient shadow-md"
       >
         {logSaved ? (
           <>
-            <CheckCircle className="w-5 h-5" /> Log saved — ML updating…
+            <CheckCircle className="w-5 h-5" /> Log saved — updating your health summary…
           </>
         ) : (
           <>

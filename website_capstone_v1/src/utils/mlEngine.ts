@@ -449,14 +449,14 @@ export function runMLAnalysis(
 
   const cardioRecs = [
     cardiovascular > 55 ? 'Increase moderate cardio to at least 30 minutes daily.' : 'Keep your cardio routine consistent to maintain low risk.',
-    hasProfile && profile?.smoking === 'current' ? 'Smoking is a strong predictor in both models. Consider a quit plan.' : 'Remaining smoke-free helps keep model risk outputs lower.',
+    hasProfile && profile?.smoking === 'current' ? 'Smoking significantly increases heart risk. Consider starting a quit plan.' : 'Staying smoke-free helps keep your heart risk low.',
     avgFats > 80 ? 'Reduce saturated fats and replace with unsaturated sources.' : 'Current fat intake looks balanced for heart health.',
   ];
 
   const metabolicRecs = [
     avgSleep < 7 ? 'Increase sleep toward 7-9 hours to lower metabolic strain.' : 'Sleep is in a supportive range for metabolic regulation.',
     avgWater < 8 ? 'Hydration is below target. Aim for 8-10 cups per day.' : 'Hydration target is being met consistently.',
-    Math.abs(avgCalories - 2000) > 500 ? 'Calorie intake variance is high. Stabilize intake for better metabolic predictions.' : 'Calorie intake is relatively stable and helps model consistency.',
+    Math.abs(avgCalories - 2000) > 500 ? 'Your daily calorie intake varies widely. Try keeping meals more consistent each day.' : 'Your daily calorie intake is steady and balanced.',
   ];
 
   const nutritionRecs = [
@@ -467,8 +467,8 @@ export function runMLAnalysis(
 
   const sleepRecs = [
     avgSleep < 7 ? `Average sleep is ${avgSleep.toFixed(1)}h. Add a fixed bedtime routine.` : `Average sleep is ${avgSleep.toFixed(1)}h, within recommended range.`,
-    avgCaffeine > 3 ? 'Reduce late-day caffeine to improve sleep architecture.' : 'Caffeine pattern is unlikely to significantly disrupt sleep.',
-    avgExercise < 25 ? 'Low activity contributes to poorer sleep predictions. Increase movement daily.' : 'Activity level supports better sleep quality.',
+    avgCaffeine > 3 ? 'Reduce late-day caffeine to improve sleep quality.' : 'Caffeine pattern is unlikely to significantly disrupt sleep.',
+    avgExercise < 25 ? 'Low daily activity can hurt sleep quality. Try adding light movement each day.' : 'Activity level supports better sleep quality.',
   ];
 
   const risks: HealthRisk[] = [

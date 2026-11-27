@@ -203,7 +203,7 @@ export const supabaseDb = {
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase.from('user_profiles').upsert(row);
+    const { error } = await supabase.from('user_profiles').upsert(row, { onConflict: 'user_id' });
     if (error) {
       console.warn('Supabase saveProfile error:', error.message);
       return null;

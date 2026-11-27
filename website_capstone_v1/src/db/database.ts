@@ -47,7 +47,8 @@ export type FoodQuality = 'healthy' | 'balanced' | 'mixed' | 'processed';
 export interface MealEntry {
   name: string;
   serving: string;   // human-readable serving label, e.g. "100g"
-  qty: number;       // number of servings
+  qty: number;       // number of base servings
+  unit?: string;     // selected measurement unit id (e.g. 'cup', 'g', 'slice')
   protein: number;   // g per serving
   carbs: number;     // g per serving
   fats: number;      // g per serving
@@ -170,7 +171,7 @@ export async function syncAllFromServer(): Promise<void> {
   // If patient, sync their profile, daily logs, and snapshots
   if (current.role === 'patient') {
     const p = await remote.getProfile(current.id);
-    if (p) {
+    if (p && (p.height > 0 || p.weight > 0 || !profiles.get(current.id))) {
       const allProfiles = read<UserProfile>(KEYS.PROFILES);
       const idx = allProfiles.findIndex(x => x.userId === current.id);
       if (idx >= 0) allProfiles[idx] = p;
@@ -306,7 +307,7 @@ export const auth = {
       const updated = users.filter(u => u.id !== res.user!.id);
       write(KEYS.USERS, [...updated, res.user]);
       writeRaw(KEYS.CURRENT_USER, res.user.id);
-      void syncAllFromServer().catch(() => {});
+      await syncAllFromServer().catch(() => {});
       return res;
     }
     if (res && !res.success) {
@@ -360,6 +361,17 @@ export const auth = {
     void getRemote().markProfileComplete(userId).catch(() => {});
   },
 
+  async markProfileCompleteAsync(userId: string): Promise<void> {
+    const users = read<User>(KEYS.USERS);
+    const idx = users.findIndex(u => u.id === userId);
+    if (idx !== -1) {
+      users[idx] = { ...users[idx], profileComplete: true };
+      write(KEYS.USERS, users);
+      writeRaw(KEYS.CURRENT_USER, userId);
+    }
+    await getRemote().markProfileComplete(userId).catch(() => {});
+  },
+
   updateUser(id: string, updates: Partial<Pick<User, 'name'>>): User | null {
     const users = read<User>(KEYS.USERS);
     const idx = users.findIndex(u => u.id === id);
@@ -391,6 +403,20 @@ export const profiles = {
     }
     write(KEYS.PROFILES, all);
     void getRemote().saveProfile(updated).catch(() => {});
+    return updated;
+  },
+
+  async saveAsync(profile: Omit<UserProfile, 'updatedAt'>): Promise<UserProfile> {
+    const all = read<UserProfile>(KEYS.PROFILES);
+    const updated: UserProfile = { ...profile, updatedAt: new Date().toISOString() };
+    const idx = all.findIndex(p => p.userId === profile.userId);
+    if (idx >= 0) {
+      all[idx] = updated;
+    } else {
+      all.push(updated);
+    }
+    write(KEYS.PROFILES, all);
+    await getRemote().saveProfile(updated).catch(() => {});
     return updated;
   },
 

@@ -103,12 +103,12 @@ export default function AuthPage({ darkMode, toggleDark }: Props) {
             Your personal<br />health companion
           </h2>
           <p className="text-green-100 text-lg mb-12 leading-relaxed">
-            Track your daily habits to predict and prevent health risks before they happen using our machine-learning system.
+            Track your daily habits to spot health trends early and stay on top of your well-being.
           </p>
 
           <div className="space-y-6">
             {[
-              { icon: Brain, title: 'Machine-Learning', desc: 'Our engine learns from your daily data to improve predictions over time.' },
+              { icon: Brain, title: 'Smart Health Insights', desc: 'Learns from your daily habits to give you clearer, more personalized guidance over time.' },
               { icon: TrendingUp, title: 'Personal Tracking', desc: 'Visualize trends across sleep, exercise, stress, hydration and more.' },
               { icon: ShieldCheck, title: 'Private & Secure', desc: 'Your health data is stored securely on your device — never shared.' },
             ].map(({ icon: Icon, title, desc }) => (
@@ -281,7 +281,7 @@ export default function AuthPage({ darkMode, toggleDark }: Props) {
             </div>
           </div>
 
-          <p className={`text-center text-xs mt-5 ${dm ? 'text-gray-600' : 'text-gray-400'}`}>
+          <p className={`text-center text-xs mt-5 ${dm ? 'text-gray-500' : 'text-gray-600'}`}>
             This project is strictly for IT Capstone Project 1. Made by students from OUR LADY OF FATIMA UNIVERSITY.
           </p>
         </div>
